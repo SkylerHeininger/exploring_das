@@ -516,6 +516,8 @@ def process_file_weighted(file_path, output_dir, col_with_text, all_words_split_
         return
     elif file_path.endswith('.csv'):
         data = pd.read_csv(file_path)
+    elif file_path.endswith('.tsv'):
+        data = pd.read_csv(file_path, sep="\t")
     elif file_path.endswith('.xlsx'):
         data = pd.read_excel(file_path)
 
