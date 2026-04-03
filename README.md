@@ -7,11 +7,14 @@ The most important file within this folder is `daseg_pipeline.py`. This will loa
 python daseg_pipeline.py --directory <data directory> --output_dir <location for saved files> --col_with_text <column containing text>
 ```
 
+`daseg_pipeline.sh` uses this on Discovery, simply replace the CLI args in that!
+
 Please note that this may not work exactly as intended initially, as the data is in a different format. The primary change is that the original code assumes the data is structured at the word level (one word + any punctuation per row), but our data is not. I have made some initial changes that should work. The output from this will be at the word level.
 
 `daseg_example_output.xlsx` contains a small example of what daseg output should generally look like (all the cols, etc, may not match. We just want to have a word per row, to start.)
 
 `DasegZeiglerPoster 5.1.25.pdf` contains a poster presentation from my previous research, detailing some of the things we did! Check it out if you are interested.
+
 
 ### Graphing
 

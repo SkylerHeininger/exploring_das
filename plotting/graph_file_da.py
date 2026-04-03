@@ -20,7 +20,7 @@ import seaborn as sns
 import Path
 
 # Defined groups of DAs
-da_groups = {
+DA_GROUPS = {
     "questions": ["Wh-Question", 
                   "Yes-No-Question", 
                   "Open-Question", 
@@ -47,7 +47,11 @@ da_groups = {
 # it could be important for them to come back to it later
 
 
-def graph_da_groups_through_transcript():
+def graph_da_groups_through_transcript(transcript, show_da_class=False):
+    """
+    Graphs the different DA_GROUPS through a transcript. Option for showing the da class on the graph, 
+    in addition to 
+    """
 
 
 # Code
