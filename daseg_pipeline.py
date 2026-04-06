@@ -189,7 +189,7 @@ def align_predictions_with_words_using_word_endings(words, predictions):
     complete_predictions = []
     for predictions_list in predictions:
         complete_predictions.extend(predictions_list)
-    # print(len(complete_predictions))
+    print(len(complete_predictions), flush=True)
 
     aligned_predictions = []
 
@@ -362,6 +362,7 @@ def process_file(file_path, output_dir, col_with_text, all_words_split_by_window
     # Replace dashes with spaces, rather than removing
     data = data[~((data[col_with_text] == 'â€”') | (data[col_with_text] == '—') | (data[col_with_text] == '–') | (data[col_with_text] == '-'))]
 
+    # This is not required for daseg, more for labels afterwards
     data_word_level = turn_df_to_word_df(data, col_with_text)
 
     words = data_word_level[col_with_text] # data[col_with_text].tolist()
@@ -376,16 +377,17 @@ def process_file(file_path, output_dir, col_with_text, all_words_split_by_window
 
     if not all_words_split_by_window:
         return None
+    
+    all_words_split_by_window = [text for text in all_words_split_by_window if text and text.strip()]
 
     # Create a dataset from the sliding window list
     dataset = Dataset.from_dict({col_with_text: all_words_split_by_window})
 
     # Apply the pipeline to the dataset in batches
-    # Adjust batch size as needed (most likely would need to reduce batch size if not enough resources)
-    predictions = pipe(dataset[col_with_text], batch_size=16)
+    predictions = pipe(list(dataset[col_with_text]), batch_size=16)
 
     # Map the predictions back to individual words
-    # word_predictions = align_predictions_with_words_using_word_endings(words, predictions)
+    word_predictions = align_predictions_with_words_using_word_endings(words, predictions)
     print("Aligned")
     entities = []
     raw_entities = []
@@ -403,7 +405,7 @@ def process_file(file_path, output_dir, col_with_text, all_words_split_by_window
 
     # print("Processing")
 
-    for idx, pred_list in enumerate(predictions):
+    for idx, pred_list in enumerate(word_predictions):
         if pred_list is None:
             chunk_index += 1
             entities.append("")
@@ -465,12 +467,12 @@ def process_file(file_path, output_dir, col_with_text, all_words_split_by_window
             words_pred.append(temp_pred['word'])
 
     # Use if word-level
-    data_word_level['Pred_DA'] = pad_list_to_dataframe_length(data, raw_entities)
-    data_word_level['Raw_Score'] = pad_list_to_dataframe_length(data, raw_scores)
-    data_word_level['Proc_DA'] = pad_list_to_dataframe_length(data, entities)
-    data_word_level['Score'] = pad_list_to_dataframe_length(data, scores)
-    data_word_level['Words_Prediction'] = pad_list_to_dataframe_length(data, words_pred)
-    data_word_level['DA_number'] = pad_list_to_dataframe_length(data, chunks)
+    data_word_level['Pred_DA'] = pad_list_to_dataframe_length(data_word_level, raw_entities)
+    data_word_level['Raw_Score'] = pad_list_to_dataframe_length(data_word_level, raw_scores)
+    data_word_level['Proc_DA'] = pad_list_to_dataframe_length(data_word_level, entities)
+    data_word_level['Score'] = pad_list_to_dataframe_length(data_word_level, scores)
+    data_word_level['Words_Prediction'] = pad_list_to_dataframe_length(data_word_level, words_pred)
+    data_word_level['DA_number'] = pad_list_to_dataframe_length(data_word_level, chunks)
 
     # word_level_df = pd.DataFrame({
     #     'Word': words_pred,
@@ -501,192 +503,6 @@ def process_file(file_path, output_dir, col_with_text, all_words_split_by_window
 
     return specific_raw_counts
 
-
-def process_file_weighted(file_path, output_dir, col_with_text, all_words_split_by_window=None, pre_loaded=False, filename_if_preloaded=""):
-    """
-    Modified process_file approach that takes the weighted sum of entity scores for a chunk,
-    and then updates the score for all values with the average score for that entity. It is recommended
-    to use process_file instead of this function, as that is closer to the original data Zelasko
-    trained the model on. This also needs updates to better reflect the
-    """
-    if all_words_split_by_window is None:
-        all_words_split_by_window = []
-
-    # Including this already split variable in case data loading pipeline has already split the words
-    # using a sliding window for instance
-    already_split = False
-    # Load the file (assuming it's a CSV or Excel file)
-    if pre_loaded:
-        data = file_path
-        # already_split = True
-    elif file_path.startswith('='):
-        # Wrong type of CSV file
-        print("Issue with csv file", flush=True)
-        return
-    elif file_path.endswith('.csv'):
-        data = pd.read_csv(file_path)
-    elif file_path.endswith('.tsv'):
-        data = pd.read_csv(file_path, sep="\t")
-    elif file_path.endswith('.xlsx'):
-        data = pd.read_excel(file_path)
-
-    else:
-        raise ValueError("Unsupported file format. Use CSV or Excel files.")
-
-    # Some kind of excessive scrubbing of characters with issues.
-
-    # Remove rows with problem sequence (some of this parsing is likely redundant)
-    # Replace dashes with spaces, rather than removing
-    data = data[~((data[col_with_text] == 'â€”') | (data[col_with_text] == '—') | (data[col_with_text] == '–') | (data[col_with_text] == '-'))]
-
-    words = data[col_with_text].tolist()
-    # And remove problem sequence from words list directly
-    words = [str(word).replace('â€”', '').replace('—', '') for word in words]
-
-    words = [scrub_word(word) for word in words]
-
-    # Concatenate words into chunks
-    if not already_split:
-        all_words_split_by_window = concatenate_words_to_length(words)
-
-    if not all_words_split_by_window:
-        return None
-
-    # Create a dataset from the chunks of words
-    dataset = Dataset.from_dict({'text': all_words_split_by_window})
-
-    # Apply the pipeline to the dataset in batches
-    # Adjust batch size as needed (most likely would need to reduce batch size if not enough resources)
-    predictions = pipe(dataset['text'], batch_size=16)
-
-    # Map the predictions back to individual words
-    word_predictions = align_predictions_with_words_using_word_endings(words, predictions)
-    print("Aligned")
-    entities = []
-    raw_entities = []
-    scores = []
-    words_pred = []
-    chunks = []
-    raw_scores = []
-    specific_raw_counts = []
-
-    chunk_index = 0
-    previous_raw_label = "I-"
-    score = 0
-
-    temp_predictions = []
-
-    print("Processing")
-
-    for idx, pred_list in enumerate(word_predictions):
-        if pred_list is None:
-            chunk_index += 1
-            entities.append("")
-            raw_entities.append("")
-            raw_scores.append("")
-            scores.append("")
-            chunks.append("")
-            words_pred.append("")
-            continue
-
-        pred = pred_list[0]
-        entity = pred['entity']
-        score = pred['score']
-
-        temp_word = ''
-        for temp_pred in pred_list:
-            temp_word += temp_pred['word']
-
-        if entity != previous_raw_label and previous_raw_label != "I-":
-            chunk_index += 1
-
-            # Remove I- labels:
-            filtered_predictions = [temp_pred for temp_pred in temp_predictions if temp_pred['entity'] != 'I-']
-
-            if filtered_predictions:
-                # Find the entity with the highest weighted sum (score)
-                entity_scores = {}
-                for temp_pred in filtered_predictions:
-                    if temp_pred['entity'] not in entity_scores:
-                        entity_scores[temp_pred['entity']] = 0
-                    entity_scores[temp_pred['entity']] += temp_pred['score']
-
-                # Find the entity with the highest weighted sum
-                if entity_scores:
-                    best_entity = max(entity_scores.items(), key=lambda x: x[1])[0]
-                else:
-                    best_entity = None
-
-                total_score = entity_scores[best_entity]
-                avg_score = total_score / len([temp_pred for temp_pred in filtered_predictions
-                                               if temp_pred['entity'] == best_entity])
-
-                # Assign best entity and update scores
-                for temp_pred in filtered_predictions:
-                    if temp_pred['entity'] == 'I-':
-                        temp_pred['entity'] = best_entity
-                        temp_pred['score'] = avg_score
-
-                # Add the final predictions into the result lists
-                for temp_pred in filtered_predictions:
-                    entities.append(temp_pred['entity'])
-                    raw_entities.append(temp_pred['raw_entity'])
-                    raw_scores.append(temp_pred['raw_score'])
-                    scores.append(temp_pred['score'])
-                    chunks.append(chunk_index)
-                    words_pred.append(temp_pred['word'])
-
-                # Reset temp_predictions after processing a chunk
-                temp_predictions = []
-
-        # Update temp predictions after saving
-        # This is for if it is a new chunk, we don't want to give the first word the previous chunk's label
-        temp_predictions.append({
-            'entity': entity,
-            'raw_entity': entity,
-            'score': score,
-            'raw_score': score,
-            'word': temp_word
-        })
-
-        previous_raw_label = entity
-
-    # Handle remaining entries by just adding them
-    if temp_predictions:
-        for temp_pred in temp_predictions:
-            entities.append(temp_pred['entity'])
-            raw_entities.append(temp_pred['raw_entity'])
-            raw_scores.append(temp_pred['raw_score'])
-            scores.append(temp_pred['score'])
-            chunks.append(chunk_index)
-            words_pred.append(temp_pred['word'])
-
-    data['Raw DA Class'] = pad_list_to_dataframe_length(data, raw_entities)
-    data['Raw Score'] = pad_list_to_dataframe_length(data, raw_scores)
-    data['Proc DA Class'] = pad_list_to_dataframe_length(data, entities)
-    data['Score'] = pad_list_to_dataframe_length(data, scores)
-    data['Words Prediction'] = pad_list_to_dataframe_length(data, words_pred)
-    data['Chunk'] = pad_list_to_dataframe_length(data, chunks)
-
-    # Create a new filename for the output
-    if not pre_loaded:
-        file_name, file_extension = os.path.splitext(file_path)
-    else:
-        file_name, file_extension = os.path.splitext(filename_if_preloaded)
-    file_name = file_name.split("/")[-1]
-    new_file_path = f"{file_name}_with_predictions.csv"
-    save_file_path = f"{file_name}_count_plot"
-
-    # Output to given dir
-    if output_dir is not None:
-        new_file_path = os.path.join(output_dir, new_file_path)
-        save_file_path = os.path.join(output_dir, save_file_path)
-
-    # Save the updated dataframe to a new CSV file
-    data.to_csv(new_file_path, index=False)
-    print(f"Predictions saved to {new_file_path}", flush=True)
-
-    return specific_raw_counts
 
 
 def check_files_in_tar(tar_file, file_list, directory):
@@ -731,19 +547,19 @@ def main():
 
     os.makedirs(args.output_dir, exist_ok=True)
 
-    diarized = [os.path.join(args.directory, f) for f in os.listdir(args.directory)
-                if f.endswith('.csv') or f.endswith('.xlsx')]
+    transcribed_files = [os.path.join(args.directory, f) for f in os.listdir(args.directory)
+                if f.endswith('.csv') or f.endswith('.xlsx') or f.endswit('.tsv')]
 
     already_daseg = [os.path.join(args.output_dir, f) for f in os.listdir(args.output_dir)
-                     if f.endswith('.csv') or f.endswith('.xlsx')]
+                     if f.endswith('.csv') or f.endswith('.xlsx') or f.endswit('.tsv')]
 
     files_to_daseg = {}
-    files_daseg = {}
+    files_already_daseg = {}
 
-    print(f"{len(diarized)} files were found within the given directory.")
+    print(f"{len(transcribed_files)} files were found within the given directory.")
 
     # Store filenames in dictionary
-    for file in diarized:
+    for file in transcribed_files:
         filename = os.path.basename(file)  # Get filename without path
         base_name_parts = filename.split('_')  # Split by underscore
 
@@ -760,14 +576,16 @@ def main():
         combined_key = '_'.join(base_name_parts[:5])
 
         # Add the audio file to the dictionary where the key is the part
-        files_daseg[combined_key] = file
-
-    print(f"{len(files_daseg)} files were already processed.\nBeginning processing now.", flush=True)
+        files_already_daseg[combined_key] = file
+    
+    print(files_to_daseg)
+    print(f"{len(files_already_daseg)} files were already processed.\nBeginning processing now.", flush=True)
     for key in files_to_daseg.keys():
         # Check that the file has not already been processed
-        if key not in files_daseg.keys():
+        if key not in files_already_daseg.keys():
             try:
                 # Process the file
+                print(f"Processing file: {key}")
                 process_file(files_to_daseg[key], args.output_dir, col_with_text=args.col_with_text)
             except Exception as e:
                 print(e)
