@@ -354,6 +354,8 @@ def process_file(file_path, output_dir, col_with_text, all_words_split_by_window
         data = pd.read_csv(file_path)
     elif file_path.endswith('.xlsx'):
         data = pd.read_excel(file_path)
+    elif file_path.endswith('.tsv'):
+        data = pd.read_csv(file_path, delimeter='\t')
 
     else:
         raise ValueError("Unsupported file format. Use CSV or Excel files.")
@@ -578,7 +580,6 @@ def main():
         # Add the audio file to the dictionary where the key is the part
         files_already_daseg[combined_key] = file
     
-    print(files_to_daseg)
     print(f"{len(files_already_daseg)} files were already processed.\nBeginning processing now.", flush=True)
     for key in files_to_daseg.keys():
         # Check that the file has not already been processed
