@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Name of the job
-#SBATCH --job-name=audiocare_gpu_job_kfold
+#SBATCH --job-name=daseg_test
 
 # Number of compute nodes
 #SBATCH --nodes=1
@@ -13,18 +13,16 @@
 #SBATCH --partition gpuq
 
 # Request the GPU resources
-#SBATCH --gres=gpu:2
+#SBATCH --gres=gpu:1
 
 # Walltime (job duration)
-#SBATCH --time=01:30:00
+#SBATCH --time=00:30:00
 
-# Email notifications
-#SBATCH --mail-type=BEGIN,END,FAIL
 
-#SBATCH --output=%x.%j.out
-#SBATCH --error=%x.%j.err
+#SBATCH --output=test_daseg.out
+#SBATCH --error=test_daseg.err
 
 nvidia-smi
-module load conda
-conda activate audiocare
-python daseg_pipeline.py --directory <data directory> --output_dir <location for saved files> --col_with_text <column containing text>
+conda init
+conda activate paullab
+python daseg_pipeline.py --directory example_files/ --output_dir output/ --col_with_text spoken_text

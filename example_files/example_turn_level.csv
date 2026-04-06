@@ -1,0 +1,4 @@
+speaker,timestamp,patient_important,patient_code,therapist_important,therapist_code,spoken_text
+S1,0:00,0,,0,,"Hello, how are you doing today?"
+Therapist,0:05,1,,0,,I am good. What should we talk about today?
+S1,0:08,0,,1,,I think talking about classes would be the most helpful.
