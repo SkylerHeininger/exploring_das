@@ -1,0 +1,16 @@
+speaker,spoken_text,daseg,confidence,DA_Class_Proc,DA number
+1,Hello,Conventional-opening,0.9,Conventional-opening,1
+1,how,I-,0.3,Open-Question,2
+1,are,I-,0.4,Open-Question,2
+1,you,I-,0.5,Open-Question,2
+1,today,Open-Question,0.8,Open-Question,2
+1,?,Open-Question,0.4,Open-Question,2
+2,I,I-,0.1,Statement-non-opinion,3
+2,am,I-,0.3,Statement-non-opinion,3
+2,ok,I-,0.6,Statement-non-opinion,3
+2,today,Statement-non-opinion,0.9,Statement-non-opinion,3
+2,",",I-,0.1,Statement-non-opinion,3
+2,how,I-,0.3,Open-Question,4
+2,are,I-,0.5,Open-Question,4
+2,you,Open-Question,0.9,Open-Question,4
+2,?,Open-Question,0.7,Open-Question,4

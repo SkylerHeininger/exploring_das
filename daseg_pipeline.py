@@ -3,6 +3,9 @@ Skyler Heininger
 GBL
 
 This pipeline uses Zelasko's daseg pipeline to perform dialogue act segmentation.
+
+Note this saves DAs at the word level, converting utterance level to word level.
+This does mean that start times, etc, are duplicated across.
 """
 
 import os
@@ -310,6 +313,10 @@ def pad_list_to_dataframe_length(data, lst):
     return lst
 
 
+def turn_df_to_word_df(df, col_with_text):
+    return df.assign(spoken_text=df[col_with_text].str.split(' ')).explode(col_with_text)
+
+
 def process_file(file_path, output_dir, col_with_text, all_words_split_by_window=None, pre_loaded=False, filename_if_preloaded=""):
     """
     Opens file, loads words, uses daseg, aligns token level predictions with words, determines how to replace
@@ -355,7 +362,9 @@ def process_file(file_path, output_dir, col_with_text, all_words_split_by_window
     # Replace dashes with spaces, rather than removing
     data = data[~((data[col_with_text] == 'â€”') | (data[col_with_text] == '—') | (data[col_with_text] == '–') | (data[col_with_text] == '-'))]
 
-    words = data[col_with_text].tolist()
+    data_word_level = turn_df_to_word_df(data, col_with_text)
+
+    words = data_word_level[col_with_text] # data[col_with_text].tolist()
     # And remove problem sequence from words list directly
     words = [str(word).replace('â€”', '').replace('—', '') for word in words]
 
@@ -456,21 +465,21 @@ def process_file(file_path, output_dir, col_with_text, all_words_split_by_window
             words_pred.append(temp_pred['word'])
 
     # Use if word-level
-    # data['Raw DA Class'] = pad_list_to_dataframe_length(data, raw_entities)
-    # data['Raw Score'] = pad_list_to_dataframe_length(data, raw_scores)
-    # data['Proc DA Class'] = pad_list_to_dataframe_length(data, entities)
-    # data['Score'] = pad_list_to_dataframe_length(data, scores)
-    # data['Words Prediction'] = pad_list_to_dataframe_length(data, words_pred)
-    # data['Chunk'] = pad_list_to_dataframe_length(data, chunks)
+    data_word_level['Pred_DA'] = pad_list_to_dataframe_length(data, raw_entities)
+    data_word_level['Raw_Score'] = pad_list_to_dataframe_length(data, raw_scores)
+    data_word_level['Proc_DA'] = pad_list_to_dataframe_length(data, entities)
+    data_word_level['Score'] = pad_list_to_dataframe_length(data, scores)
+    data_word_level['Words_Prediction'] = pad_list_to_dataframe_length(data, words_pred)
+    data_word_level['DA_number'] = pad_list_to_dataframe_length(data, chunks)
 
-    word_level_df = pd.DataFrame({
-        'Word': words_pred,
-        'Raw DA Class': raw_entities,
-        'Raw Score': raw_scores,
-        'Proc DA Class': entities,
-        'Score': scores,
-        'Chunk': chunks,
-    })
+    # word_level_df = pd.DataFrame({
+    #     'Word': words_pred,
+    #     'Raw_DA': raw_entities,
+    #     'Raw_Score': raw_scores,
+    #     'Proc_DA': entities,
+    #     'Score': scores,
+    #     'DA_number': chunks,
+    # })
 
     # Create a new filename for the output
     if not pre_loaded:
@@ -487,7 +496,7 @@ def process_file(file_path, output_dir, col_with_text, all_words_split_by_window
         save_file_path = os.path.join(output_dir, save_file_path)
 
     # Save the updated dataframe to a new CSV file
-    word_level_df.to_csv(new_file_path, index=False)
+    data_word_level.to_csv(new_file_path, index=False)
     print(f"Predictions saved to {new_file_path}", flush=True)
 
     return specific_raw_counts
