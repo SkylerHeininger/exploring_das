@@ -27,6 +27,10 @@ In the `plotting` folder, there contains several scripts for some initial plots 
 `graph_file_da.py` is in-progress, with the purpose of exploring DAs throughout a transcript, rather than just at the frequency level.
 
 
+## Setup
+
+Use requirements.txt to download required packages. I did this on Python 3.13.3, so you may need to be on a similar version for some imports to work.
+
 ## Resources
 
 Labeling manual for dialogue acts: https://web.stanford.edu/~jurafsky/ws97/manual.august1.html
