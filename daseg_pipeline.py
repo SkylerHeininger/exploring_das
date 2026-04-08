@@ -232,70 +232,6 @@ def align_predictions_with_words_using_word_endings(words, predictions):
     return aligned_predictions
 
 
-def load_and_split_text(file_path):
-    """
-    Custom method for loading data from a txt file where data is already in utterance form. This was for an experiment
-    specifically using utterances, it is not recommended to use these (based on the results of the experiment)
-    :param file_path: String
-    """
-    rows = []
-    utterances = []
-    if type(file_path) == str:
-        with open(file_path, 'r') as file:
-            for line in file:
-                # Format for each line: "start_time end_time speaker_number utterance"
-                parts = line.strip().split(maxsplit=3)
-
-                if len(parts) < 4:
-                    continue  # If line is malformed or doesn't have the required parts, skip it
-
-                start_time, end_time, speaker_number, utterance = parts
-
-                utterances.append(utterance)
-
-                # Split the utterance by spaces into individual words
-                words = utterance.split()
-
-                # For each word, create a dictionary of the associated data
-                for word in words:
-                    row = {
-                        'text': word,
-                        'start_time': start_time,
-                        'end_time': end_time,
-                        'speaker': speaker_number
-                    }
-                    rows.append(row)
-    else:
-        for line in file_path:
-            # Format for each line: "start_time end_time speaker_number utterance"
-            parts = line.strip().split(maxsplit=3)
-
-            if len(parts) < 4:
-                continue  # If line is malformed or doesn't have the required parts, skip it
-
-            start_time, end_time, speaker_number, utterance = parts
-            # Decode data to remove binary encoding artifacts
-            start_time = start_time.decode('utf-8', errors='ignore')
-            end_time = end_time.decode('utf-8', errors='ignore')
-            speaker_number = speaker_number.decode('utf-8', errors='ignore')
-            utterance = utterance.decode('utf-8', errors='ignore')
-
-            utterances.append(utterance)
-            words = utterance.split()
-
-            for word in words:
-                row = {
-                    'text': word,
-                    'start_time': start_time,
-                    'end_time': end_time,
-                    'speaker': speaker_number
-                }
-                rows.append(row)
-    # Create a DataFrame from the list of rows
-    df = pd.DataFrame(rows)
-    return df, utterances
-
-
 def pad_list_to_dataframe_length(data, lst):
     """
     Method for ensuring dataframe is the same length as a list
@@ -361,13 +297,18 @@ def process_file(file_path, output_dir, col_with_text, all_words_split_by_window
         raise ValueError("Unsupported file format. Use CSV or Excel files.")
 
     # Remove rows with problem sequence (some of this parsing is likely redundant)
+    data = data[~(data[col_with_text] == 'â€”')]
+
     # Replace dashes with spaces, rather than removing
-    data = data[~((data[col_with_text] == 'â€”') | (data[col_with_text] == '—') | (data[col_with_text] == '–') | (data[col_with_text] == '-'))]
+    data[col_with_text] = data[col_with_text].replace(
+        {'—': ' ', '–': ' ', '-': ' '},
+        regex=False
+    )
 
     # This is not required for daseg, more for labels afterwards
     data_word_level = turn_df_to_word_df(data, col_with_text)
 
-    words = data_word_level[col_with_text] # data[col_with_text].tolist()
+    words = data_word_level[col_with_text]
     # And remove problem sequence from words list directly
     words = [str(word).replace('â€”', '').replace('—', '') for word in words]
 
@@ -476,6 +417,7 @@ def process_file(file_path, output_dir, col_with_text, all_words_split_by_window
     data_word_level['Words_Prediction'] = pad_list_to_dataframe_length(data_word_level, words_pred)
     data_word_level['DA_number'] = pad_list_to_dataframe_length(data_word_level, chunks)
 
+    # If not converting turn level to word level
     # word_level_df = pd.DataFrame({
     #     'Word': words_pred,
     #     'Raw_DA': raw_entities,
@@ -506,37 +448,12 @@ def process_file(file_path, output_dir, col_with_text, all_words_split_by_window
     return specific_raw_counts
 
 
-
-def check_files_in_tar(tar_file, file_list, directory):
-    """Check if filenames in file_list exist in the tarball."""
-    tar_data = tarfile.open(tar_file, mode='r')
-
-    tar_contents = tar_data.getnames()
-    print(tar_contents)
-
-    # Prepend the directory to each file in the file_list before checking
-    matched_files = [
-        os.path.join(directory, os.path.basename(file)) for file in file_list
-        if os.path.join(directory, os.path.basename(file)) in tar_contents
-    ]
-
-    return matched_files, tar_data
-
-
 def main():
     """
     Performs all of the data loading, and then calls process_file for each file.
     To note, this does check the output directory supplied in arguments for all files that have already been processed,
     and will not process those files again.
-
-    Many previous usages are included below, commented out. In case you need to 
-    load data differently, these may be helpful.
     """
-
-
-    # There are a lot of arguments here. This pipeline and how to load the data changes a lot depending on what
-    # form you are loading data from. Sometimes, you may need to pull names from one file, while getting the text from
-    # another. Or, you want to look at a specific file. Change these as needed.
 
     parser = argparse.ArgumentParser(description="Token classification with Longformer pipeline.")
 
