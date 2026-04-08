@@ -33,15 +33,11 @@ Use requirements.txt to download required packages. I did this on Python 3.13.3,
 
 ## Compute
 
-With CPU, this took 7.5005 seconds to process the example_turn_level.csv. This file is relatively small (around 3 turns), but this is still quite fast. On GPU, this took around 0.2246 seconds for the same file.
+On a GPU, this took around 22 seconds to run on all 30 files. Per-file, this is 0.73 seconds a transcript.
 
-Assuming we have around 60 turns, and it takes around 2.5 seconds per turn (give or take), this would take around 2.5 minutes (147.509 seconds) per transcript to run on CPU! On GPU, this would look like around 4.417 seconds. Translating this to longer transcripts, my previous research was on transcripts around 40 minutes long. On a GPU, this took around 13 seconds per transcript. Translating this to our CPU (assuming the GPUs are comparable), this gives us around 7.23 minutes. 
+On a CPU (with 4 cores), this took around 909 seconds to complete, or 15 minutes. Per-file, this is around 30 seconds a transcript.
 
-```
-(previous gpu / current gpu) * current cpu = estimated cpu time
-(13 / 4.417) * 147.509 = 434.134 seconds = 7.24 minutes
-```
-This is still somewhat slow, but faster than you'd expect for a large model!
+This is still somewhat slow, but faster than you'd expect for a well-performing transformer-based model! More importantly, this is fast enough to reasonably on CPUs. Of course, longer transcipts will take longer, but should linearly scale.
 
 ## Resources
 
