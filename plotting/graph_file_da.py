@@ -422,6 +422,9 @@ if __name__=="__main__":
 
     p_t_comparison = {'patient': p_important, 'therapist': t_important, 'nonimp': non_important}
     graph_comparison_of_groups_full(p_t_comparison, col=DA_COLUMN, title_prefix="Patient-Therapist-NonImportant Comparison", show=False, save=True)
+    all_important = combined[(combined['patient_important'] == 1) | (combined['therapist_important'] == 1)][DA_COLUMN]
+    a_t_comparison = {'Important': all_important, 'NonImportant': non_important}
+    graph_comparison_of_groups_full(a_t_comparison, col=DA_COLUMN, title_prefix="Important-NonImportant Comparison", show=False, save=True)
 
     # Compare importance across speaker
     # t_t_important is where the therapist thinks what the therapist said was important
@@ -439,7 +442,7 @@ PP importance num: {len(p_p_important)}\n")
                         'p_t_important': p_t_important,
                         'p_p_important': p_p_important,
                         'non_important': non_important}
-    graph_comparison_of_groups_full(cross_importance, col=DA_COLUMN, title_prefix="Cross Speaker Importance Comparison", show=True, save=True)
+    graph_comparison_of_groups_full(cross_importance, col=DA_COLUMN, title_prefix="Cross Speaker Importance Comparison", show=False, save=True)
 
 
     # Combined split on multiple codes per thing

@@ -25,4 +25,4 @@
 nvidia-smi
 conda init
 conda activate paullab
-python daseg_pipeline.py --directory AC_TranscriptsTSV_PatientTherapistCoded/ --output_dir output/ --col_with_text spoken_text
+python daseg_pipeline.py --directory data_dir/ --output_dir output/ --col_with_text spoken_text
