@@ -25,8 +25,9 @@ import json
 
 
 DA_COLUMN = 'Proc_DA'
+# These variables are for the file-level, not full dataset
 SAVE_GRAPHS = True
-SHOW_GRAPHS = False
+SHOW_GRAPHS = True
 
 # Defined groups of DAs
 DA_GROUPS = {
@@ -65,7 +66,8 @@ GROUP_COLORS = {
 # it could be important for them to come back to it later
 
 
-def graph_da_groups_through_transcript(transcript, das, show_da_class=False, importance="both", save=SAVE_GRAPHS, show=SHOW_GRAPHS):
+def graph_da_groups_through_transcript(transcript, das, filename, show_da_class=False, importance="both", 
+                                       save=SAVE_GRAPHS, show=SHOW_GRAPHS, outdir="output/" ):
     """
     Graphs the different DA_GROUPS through a transcript. Option for showing the da class on the graph, 
     in addition to having different lines for the different da groups. This will also graph the important 
@@ -123,7 +125,10 @@ def graph_da_groups_through_transcript(transcript, das, show_da_class=False, imp
 
     fig.suptitle("Dialogue Act Groups Through Transcript", fontsize=13, fontweight="bold", y=1.01)
     plt.tight_layout()
-    plt.show()
+    if save:
+        plt.savefig(os.path.join(outdir, f"{os.path.splitext(os.path.basename(filename))[0]}.png"))
+    if show:
+        plt.show()
 
 
 def graph_comparison_of_groups(groups: dict, sorted_columns=None, p_values_fdr=None, title_prefix="", save=SAVE_GRAPHS, show=SHOW_GRAPHS):
@@ -144,14 +149,17 @@ def graph_comparison_of_groups(groups: dict, sorted_columns=None, p_values_fdr=N
 
     # Infer columns (union of all labels) sorted by overall frequency if not provided
     if sorted_columns is None:
-        all_counts = sum((s.value_counts() for s in groups.values()), pd.Series(dtype=float))
+        all_counts = (pd.concat([s.value_counts() for s in groups.values()])
+                .groupby(level=0)
+                .sum())        
         sorted_columns = list(all_counts.sort_values(ascending=False).index)
 
     n_labels = len(sorted_columns)
     x = np.arange(n_labels)
 
-    cmap = cm.get_cmap('tab10' if n_groups <= 10 else 'tab20')
-    colors = [cmap(i / max(n_groups - 1, 1)) for i in range(n_groups)]
+    # cmap = cm.get_cmap('tab10' if n_groups <= 10 else 'tab20')
+    # colors = [cmap(i / max(n_groups - 1, 1)) for i in range(n_groups)]
+    colors = list(GROUP_COLORS.values())
 
     total_bar_width = 0.8
     bar_width = total_bar_width / n_groups
@@ -160,6 +168,8 @@ def graph_comparison_of_groups(groups: dict, sorted_columns=None, p_values_fdr=N
          (total_bar_width - bar_width) / 2,
         n_groups
     )
+
+    plt.figure(figsize=[13, 5], clear=True)
 
     for name, color, offset in zip(group_names, colors, offsets):
         freqs = group_freqs[name].reindex(sorted_columns, fill_value=0)
@@ -171,22 +181,91 @@ def graph_comparison_of_groups(groups: dict, sorted_columns=None, p_values_fdr=N
             color=color, alpha=0.7
         )
 
-    plt.figure(figsize=[13, 5], clear=True)
     plt.title(f'{title_prefix} DA distribution' if title_prefix else 'DA distribution')
     plt.xlabel('DA Label')
     plt.ylabel('Fraction')
     plt.xticks(x, sorted_columns, rotation=90)
     plt.yscale('log')
     plt.legend()
-    plt.grid(True)
-
+    plt.grid(True, color='lightgrey', linewidth=0.5)
     plt.tight_layout()
     plt.show()
 
 
+def graph_comparison_of_groups_full(groups: dict, col: str, sorted_columns=None, p_values_fdr=None, title_prefix="", save=SAVE_GRAPHS, show=SHOW_GRAPHS):
+    groups = {
+        name: (df[col] if isinstance(df, pd.DataFrame) else df)
+        for name, df in groups.items()
+    }
+    group_names = list(groups.keys())
+    n_groups = len(group_names)
+
+    # Compute normalized value counts for each group
+    group_freqs = {
+        name: series.value_counts(normalize=True)
+        for name, series in groups.items()
+    }
+
+    # Infer columns (union of all labels) sorted by overall frequency if not provided
+    if sorted_columns is None:
+        all_counts = (pd.concat([s.value_counts() for s in groups.values()],
+                                keys=group_names)  # keeps a clean 2-level index
+                        .reset_index(level=0, drop=True)  # drop the group key level
+                        .groupby(level=0)
+                        .sum())
+        sorted_columns = list(all_counts.sort_values(ascending=False).index)
+
+    n_labels = len(sorted_columns)
+    x = np.arange(n_labels)
+
+    # cmap = cm.get_cmap('tab10' if n_groups <= 10 else 'tab20')
+    # colors = [cmap(i / max(n_groups - 1, 1)) for i in range(n_groups)]
+    if n_groups > 5:
+        cmap = cm.get_cmap('tab10' if n_groups <= 10 else 'tab20')
+        colors = [cmap(i / max(n_groups - 1, 1)) for i in range(n_groups)]
+    else:
+        colors = list(GROUP_COLORS.values())
+
+    total_bar_width = 0.8
+    bar_width = total_bar_width / n_groups
+    offsets = np.linspace(
+        -(total_bar_width - bar_width) / 2,
+         (total_bar_width - bar_width) / 2,
+        n_groups
+    )
+
+    plt.figure(figsize=[13, 5], clear=True)
+
+    for name, color, offset in zip(group_names, colors, offsets):
+        freqs = group_freqs[name].reindex(sorted_columns, fill_value=0)
+        n = len(groups[name])
+        plt.bar(
+            x + offset, freqs,
+            width=bar_width,
+            label=f'{name} (n={n})',
+            color=color, alpha=0.7
+        )
+
+    plt.title(f'{title_prefix} DA distribution' if title_prefix else 'DA distribution')
+    plt.xlabel('DA Label')
+    plt.ylabel('Fraction')
+    plt.xticks(x, sorted_columns, rotation=90)
+    plt.yscale('log')
+    plt.legend()
+    plt.grid(True, color='lightgrey', linewidth=0.5)
+
+    plt.tight_layout()
+    
+    if save:
+        plt.savefig(os.path.join("output", f'{title_prefix}_da_distribution.png'), bbox_inches='tight')
+    if show:
+        plt.show()
+    plt.close()
+
+
 
 def graph_file(filename, word_col="spoken_text", target_col="Proc DA Class", skip_individual_graphing=True,
-               show_da_class=False, importance="both", save=SAVE_GRAPHS, show=SHOW_GRAPHS):
+               show_da_class=False, importance="both", save=SAVE_GRAPHS, show=SHOW_GRAPHS, outdir="output/"):
     """
     Will call all appropriate graphing functions for a file.
     :param filename: String filename
@@ -197,23 +276,23 @@ def graph_file(filename, word_col="spoken_text", target_col="Proc DA Class", ski
     df = pd.read_csv(filename)
 
     # Pre-process DAs to have just one row per DA (if word-level, many duplicates)
-    df_da_level = (df.groupby('DA number', as_index=False)
+    df_da_level = (df.groupby('DA_number', as_index=False)
          .agg({
              'speaker': 'first',
-             'spoken_text': ' '.join,
+             'spoken_text': lambda x: ' '.join(x.dropna()),
              DA_COLUMN: 'last',
              'patient_important': 'max',
              'therapist_important': 'max',
              'patient_code': 'max',
              'therapist_code': 'max',
-             'time': 'max'
+             'timestamp': 'max'
          }))
     
     # Just using this function for the graphing
     if skip_individual_graphing:
         return df_da_level
 
-    graph_da_groups_through_transcript(transcript=df[word_col], das=df[target_col], show_da_class=show_da_class, importance=importance)
+    graph_da_groups_through_transcript(transcript=df[word_col], das=df[target_col], filename=filename, show_da_class=show_da_class, importance=importance, outdir=outdir)
 
     # Split by speaker - not assuming two speakers
     speakers = df_da_level['speaker'].unique()
@@ -234,15 +313,17 @@ def graph_file(filename, word_col="spoken_text", target_col="Proc DA Class", ski
 
     # Compare importance across speaker
     # t_t_important is where the therapist thinks what the therapist said was important
-    t_t_important = df_da_level[(df_da_level['therapist_important'] == 1) & (['speaker'] == 'Therapist')][DA_COLUMN]
+    t_t_important = df_da_level[(df_da_level['therapist_important'] == 1) & (df_da_level['speaker'] == 'Therapist')][DA_COLUMN]
     # Therapist thinks patient said something important
-    t_p_important = df_da_level[(df_da_level['therapist_important'] == 1) & (['speaker'] != 'Therapist')][DA_COLUMN]
-    p_t_important = df_da_level[(df_da_level['patient_important'] == 1) & (['speaker'] == 'Therapist')][DA_COLUMN]
-    p_p_important = df_da_level[(df_da_level['patient_important'] == 1) & (['speaker'] != 'Therapist')][DA_COLUMN]
+    t_p_important = df_da_level[(df_da_level['therapist_important'] == 1) & (df_da_level['speaker'] != 'Therapist')][DA_COLUMN]
+    p_t_important = df_da_level[(df_da_level['patient_important'] == 1) & (df_da_level['speaker'] == 'Therapist')][DA_COLUMN]
+    p_p_important = df_da_level[(df_da_level['patient_important'] == 1) & (df_da_level['speaker'] != 'Therapist')][DA_COLUMN]
+    
     cross_importance = {'t_t_important': t_t_important, 
                         't_p_important': t_p_important, 
                         'p_t_important': p_t_important,
-                        'p_p_important': p_p_important}
+                        'p_p_important': p_p_important,
+                        'non_important': non_important}
     graph_comparison_of_groups(cross_importance, title_prefix="Cross Speaker Importance Comparison")
 
 
@@ -273,10 +354,10 @@ if __name__=="__main__":
                         default="spoken_text")
     parser.add_argument('--target_col', type=str, 
                         help="column with dialogue acts",
-                        default="DA_Class_Proc")
+                        default="Proc_DA")
     parser.add_argument('--show_da_class', type=bool, 
                         help="Show the exact DA class alonside DA groups",
-                        default=True)
+                        default=False)
     parser.add_argument('--importance', type=str, 
                         help="therapist, patient, or both importance",
                         default="both")
@@ -308,17 +389,27 @@ if __name__=="__main__":
                              word_col=args.word_col, 
                              target_col=args.target_col, 
                              show_da_class=args.show_da_class, 
-                             importance=args.importance)
+                             importance=args.importance,
+                             outdir = args.graph_dir)
             out['source_file'] = file.name
             dfs_at_da_level[file.name] = out
 
     # Combine all - these are given the file name to distinguish eachother
     combined = pd.concat(dfs_at_da_level.values(), ignore_index=True)
+    combined = combined[combined[DA_COLUMN] != 'I-']
 
     # Split by therapist and non-therapist speakers
     speaker_groups = {'therapist': combined[combined['speaker'] == 'Therapist'],
-                      'non_therapist': combined[combined['speaker'] != 'Therapist']}
-    graph_comparison_of_groups(speaker_groups, title_prefix="Speaker Comparison", save=True, show=False)
+                      'patient': combined[combined['speaker'] == 'Patient'],}
+                    #   'SN': combined[(combined['speaker'] != 'Therapist') & (combined['speaker'] != 'Patient')]}
+    
+    graph_comparison_of_groups_full(speaker_groups, col=DA_COLUMN, title_prefix="Speaker Comparison", save=True, show=False)
+
+    speaker_groups = {'therapist': combined[combined['speaker'] == 'Therapist'],
+                    'patient': combined[combined['speaker'] == 'Patient'],
+                  'SN': combined[(combined['speaker'] != 'Therapist') & (combined['speaker'] != 'Patient')]}
+    graph_comparison_of_groups_full(speaker_groups, col=DA_COLUMN, title_prefix="All Speaker Comparison", save=False, show=False)
+
 
 
     # Triple split by patient importance, therapist importance, and non-importance
@@ -326,16 +417,19 @@ if __name__=="__main__":
     p_important = combined[combined['patient_important'] == 1][DA_COLUMN]
     t_important = combined[combined['therapist_important'] == 1][DA_COLUMN]
     non_important = combined[(combined['therapist_important'] != 1) & (combined['patient_important'] != 1)][DA_COLUMN]
+    p_t_comparison = {'patient': p_important, 'therapist': t_important}
+    graph_comparison_of_groups_full(p_t_comparison, col=DA_COLUMN, title_prefix="Patient-Therapist Importance Comparison", show=False, save=True)
+
     p_t_comparison = {'patient': p_important, 'therapist': t_important, 'nonimp': non_important}
-    graph_comparison_of_groups(p_t_comparison, title_prefix="Patient-Therapist-NonImportant Comparison")
+    graph_comparison_of_groups_full(p_t_comparison, col=DA_COLUMN, title_prefix="Patient-Therapist-NonImportant Comparison", show=False, save=True)
 
     # Compare importance across speaker
     # t_t_important is where the therapist thinks what the therapist said was important
-    t_t_important = combined[(combined['therapist_important'] == 1) & (['speaker'] == 'Therapist')][DA_COLUMN]
+    t_t_important = combined[(combined['therapist_important'] == 1) & (combined['speaker'] == 'Therapist')][DA_COLUMN]
     # Therapist thinks patient said something important
-    t_p_important = combined[(combined['therapist_important'] == 1) & (['speaker'] != 'Therapist')][DA_COLUMN]
-    p_t_important = combined[(combined['patient_important'] == 1) & (['speaker'] == 'Therapist')][DA_COLUMN]
-    p_p_important = combined[(combined['patient_important'] == 1) & (['speaker'] != 'Therapist')][DA_COLUMN]
+    t_p_important = combined[(combined['therapist_important'] == 1) & (combined['speaker'] != 'Therapist')][DA_COLUMN]
+    p_t_important = combined[(combined['patient_important'] == 1) & (combined['speaker'] == 'Therapist')][DA_COLUMN]
+    p_p_important = combined[(combined['patient_important'] == 1) & (combined['speaker'] != 'Therapist')][DA_COLUMN]
     print(f"TT importance num: {len(t_t_important)}\n \
 TP importance num: {len(t_p_important)}\n \
 PT importance num: {len(p_t_important)}\n \
@@ -343,23 +437,41 @@ PP importance num: {len(p_p_important)}\n")
     cross_importance = {'t_t_important': t_t_important, 
                         't_p_important': t_p_important, 
                         'p_t_important': p_t_important,
-                        'p_p_important': p_p_important}
-    graph_comparison_of_groups(cross_importance, title_prefix="Cross Speaker Importance Comparison")
+                        'p_p_important': p_p_important,
+                        'non_important': non_important}
+    graph_comparison_of_groups_full(cross_importance, col=DA_COLUMN, title_prefix="Cross Speaker Importance Comparison", show=True, save=True)
 
+
+    # Combined split on multiple codes per thing
+    combined_t_coded = combined.assign(
+        therapist_code=combined['therapist_code'].str.split(', ')
+    ).explode('therapist_code').reset_index(drop=True)
 
     # Split by importance code for therapists
-    t_codes = combined['therapist_code'].unique()
-    df_t_codes = {code: combined[combined['therapist_code'] == code][DA_COLUMN] for code in t_codes}
-    df_t_codes['noncoded'] = combined[combined['therapist_code'].isna() | (df['therapist_code'] == '')][DA_COLUMN]
-    graph_comparison_of_groups(df_t_codes, title_prefix="Therapist Code Comparison")
+    # Drop NaN from unique so it doesn't become a key
+    t_codes = combined_t_coded['therapist_code'].dropna().unique()
+    t_codes = [c for c in t_codes if c != '']
+    print(t_codes)
+    df_t_codes = {code: combined_t_coded[combined_t_coded['therapist_code'] == code][DA_COLUMN] for code in t_codes}
+    # Add noncoded separately and cleanly
+    df_t_codes['noncoded'] = combined_t_coded[combined_t_coded['therapist_code'].isna() | (combined_t_coded['therapist_code'] == '')][DA_COLUMN]
+    graph_comparison_of_groups_full(df_t_codes, col=DA_COLUMN, title_prefix="Therapist Code Comparison", show=False, save=True)
+
 
 
     # Split by importance code for patients
-    p_codes = combined['patient_code'].unique()
-    df_p_codes = {code: combined[combined['patient_code'] == code][DA_COLUMN] for code in p_codes}
-    df_p_codes['noncoded'] = combined[combined['patient_code'].isna() | (df['patient_code'] == '')][DA_COLUMN]
-    graph_comparison_of_groups(df_p_codes, title_prefix="Patient Code Comparison")
-
+    combined_p_coded = combined.assign(
+        patient_code=combined['patient_code'].str.split(', ')
+    ).explode('patient_code').reset_index(drop=True)
+    p_codes = combined_p_coded['therapist_code'].dropna().unique()
+    p_codes = [c for c in t_codes if c != '']
+    print(p_codes)
+    df_p_codes = {code: combined_p_coded[combined_p_coded['therapist_code'] == code][DA_COLUMN] for code in t_codes}
+    df_p_codes['noncoded'] = combined_p_coded[combined_p_coded['therapist_code'].isna() | (combined_p_coded['therapist_code'] == '')][DA_COLUMN]
+    graph_comparison_of_groups_full(df_p_codes, col=DA_COLUMN, title_prefix="Patient Code Comparison", show=False, save=True)
+    
+    
+    exit()
 
     # Train-test split comparison
     test_das = []
@@ -372,9 +484,9 @@ PP importance num: {len(p_p_important)}\n")
     # Not super sure what this will exactly look like
     for item in data:
         df_file = dfs_at_da_level[item.key()]
-        time = item.value()['time']
-        if time in df_file['time']:
-            das = df_file[df_file['time'] == time][DA_COLUMN]
+        time = item.value()['timestamp']
+        if time in df_file['timestamp']:
+            das = df_file[df_file['timestamp'] == time][DA_COLUMN]
             test_das.append(das)
 
     
@@ -385,11 +497,11 @@ PP importance num: {len(p_p_important)}\n")
     # Not super sure what this will exactly look like
     for item in data:
         df_file = dfs_at_da_level[item.key()]
-        time = item.value()['time']
-        if time in df_file['time']:
-            das = df_file[df_file['time'] == time][DA_COLUMN]
+        time = item.value()['timestamp']
+        if time in df_file['timestamp']:
+            das = df_file[df_file['timestamp'] == time][DA_COLUMN]
             train_das.append(das)
 
     groups = {'train': train_das, 'test': test_das}
-    graph_comparison_of_groups(groups, title_prefix="Train-Test Comparison")
+    graph_comparison_of_groups_full(groups, col=DA_COLUMN, title_prefix="Train-Test Comparison", show=True, save=True)
     

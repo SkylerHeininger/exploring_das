@@ -16,7 +16,7 @@
 #SBATCH --gres=gpu:1
 
 # Walltime (job duration)
-#SBATCH --time=00:30:00
+#SBATCH --time=01:00:00
 
 
 #SBATCH --output=test_daseg.out
@@ -25,4 +25,4 @@
 nvidia-smi
 conda init
 conda activate paullab
-python daseg_pipeline.py --directory example_files/ --output_dir output/ --col_with_text spoken_text
+python daseg_pipeline.py --directory AC_TranscriptsTSV_PatientTherapistCoded/ --output_dir output/ --col_with_text spoken_text

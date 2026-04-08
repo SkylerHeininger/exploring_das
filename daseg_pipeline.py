@@ -20,6 +20,7 @@ import numpy as np
 import re
 import matplotlib.pyplot as plt
 import seaborn as sns
+import time
 
 # Initialize the pipeline for token classification
 # Use device=0 for GPU usage if available
@@ -155,12 +156,13 @@ def clean_prediction(prediction, chars_to_remove=None):
     :param chars_to_remove: Keep as None to remove common prediction artifacts.
     """
     if chars_to_remove is None:
-        chars_to_remove = ['Ä', 'Ġ', ' ']
+        chars_to_remove = ['Ä', 'Ġ', ' ', 'Š', '\n']
 
-    original_word = prediction['word']
-    original_word = str(original_word).replace("â€”", '')  # Remove another problem sequence
+    original_word = prediction['word'].strip()
+    original_word = str(original_word).replace("â€", '')
+    original_word = original_word.replace('ÄŠ', '')  # remove multi-char sequence first
+    original_word = original_word.replace('Ä\x8a', '')  # alternate encoding
 
-    # Remove unwanted characters but keep spaces
     cleaned_word = ''.join(char for char in original_word if char not in chars_to_remove)
     prediction['word'] = cleaned_word
 
@@ -172,8 +174,15 @@ def scrub_word(word):
     Scrub the word by removing non-ASCII characters and other unwanted symbols.
     Daseg struggles with non-ASCII characters and will sometimes crash, avoid using those.
     """
-    word = re.sub(r'[^\x00-\x7F]+', '', word)
-    return word
+    chars_to_remove = ['Ä', 'Ġ', ' ', 'Š', '\n']
+    original_word = str(word).replace("â€", '')
+    original_word = original_word.replace('ÄŠ', '')  # remove multi-char sequence first
+    original_word = original_word.replace('Ä\x8a', '')  # alternate encoding
+    original_word = re.sub(r'[^\x00-\x7F]+', '', original_word)
+
+    cleaned_word = ''.join(char for char in original_word if char not in chars_to_remove)
+
+    return cleaned_word
 
 
 def align_predictions_with_words_using_word_endings(words, predictions):
@@ -202,6 +211,7 @@ def align_predictions_with_words_using_word_endings(words, predictions):
         current_concat = ""
 
         cleaned_word = scrub_word(word)
+        # prnt_first = True
 
         # Continue processing while there are still predictions to check
         while prediction_index < num_predictions:
@@ -220,6 +230,9 @@ def align_predictions_with_words_using_word_endings(words, predictions):
                 current_concat += cleaned_pred
                 prediction_index += 1
                 break
+            # elif prnt_first:
+            #     prnt_first = False
+            #     print(cleaned_word, cleaned_pred)
             word_predictions.append(prediction)
             prediction_index += 1
 
@@ -250,7 +263,10 @@ def pad_list_to_dataframe_length(data, lst):
 
 
 def turn_df_to_word_df(df, col_with_text):
-    return df.assign(spoken_text=df[col_with_text].str.split(' ')).explode(col_with_text)
+    return (df.assign(spoken_text=df[col_with_text].str.split(' '))
+          .explode(col_with_text)
+          .loc[lambda d: d[col_with_text].notna() & (d[col_with_text].str.strip() != '')]
+          .reset_index(drop=True))
 
 
 def process_file(file_path, output_dir, col_with_text, all_words_split_by_window=None, pre_loaded=False, filename_if_preloaded=""):
@@ -291,10 +307,13 @@ def process_file(file_path, output_dir, col_with_text, all_words_split_by_window
     elif file_path.endswith('.xlsx'):
         data = pd.read_excel(file_path)
     elif file_path.endswith('.tsv'):
-        data = pd.read_csv(file_path, delimeter='\t')
+        data = pd.read_csv(file_path, delimiter='\t')
 
     else:
         raise ValueError("Unsupported file format. Use CSV or Excel files.")
+
+    data = data.dropna(how='all')  # drop fully empty rows
+    data = data[data[col_with_text].notna() & (data[col_with_text].astype(str).str.strip() != '')]
 
     # Remove rows with problem sequence (some of this parsing is likely redundant)
     data = data[~(data[col_with_text] == 'â€”')]
@@ -302,7 +321,7 @@ def process_file(file_path, output_dir, col_with_text, all_words_split_by_window
     # Replace dashes with spaces, rather than removing
     data[col_with_text] = data[col_with_text].replace(
         {'—': ' ', '–': ' ', '-': ' '},
-        regex=False
+        regex=True
     )
 
     # This is not required for daseg, more for labels afterwards
@@ -322,6 +341,7 @@ def process_file(file_path, output_dir, col_with_text, all_words_split_by_window
         return None
     
     all_words_split_by_window = [text for text in all_words_split_by_window if text and text.strip()]
+    
 
     # Create a dataset from the sliding window list
     dataset = Dataset.from_dict({col_with_text: all_words_split_by_window})
@@ -417,6 +437,14 @@ def process_file(file_path, output_dir, col_with_text, all_words_split_by_window
     data_word_level['Words_Prediction'] = pad_list_to_dataframe_length(data_word_level, words_pred)
     data_word_level['DA_number'] = pad_list_to_dataframe_length(data_word_level, chunks)
 
+    print(f"Total words: {len(words)}", flush=True)
+    print(f"Total windows: {len(all_words_split_by_window)}", flush=True)
+    print(f"Total predictions: {len(predictions)}", flush=True)
+    print(f"Total aligned: {len(word_predictions)}", flush=True)
+
+    none_count = sum(1 for p in word_predictions if p is None)
+    print(f"None predictions: {none_count}", flush=True)
+
     # If not converting turn level to word level
     # word_level_df = pd.DataFrame({
     #     'Word': words_pred,
@@ -454,6 +482,7 @@ def main():
     To note, this does check the output directory supplied in arguments for all files that have already been processed,
     and will not process those files again.
     """
+    start_time = time.time()
 
     parser = argparse.ArgumentParser(description="Token classification with Longformer pipeline.")
 
@@ -467,10 +496,10 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
 
     transcribed_files = [os.path.join(args.directory, f) for f in os.listdir(args.directory)
-                if f.endswith('.csv') or f.endswith('.xlsx') or f.endswit('.tsv')]
+                if f.endswith('.csv') or f.endswith('.xlsx') or f.endswith('.tsv')]
 
     already_daseg = [os.path.join(args.output_dir, f) for f in os.listdir(args.output_dir)
-                     if f.endswith('.csv') or f.endswith('.xlsx') or f.endswit('.tsv')]
+                     if f.endswith('.csv') or f.endswith('.xlsx') or f.endswith('.tsv')]
 
     files_to_daseg = {}
     files_already_daseg = {}
@@ -503,11 +532,12 @@ def main():
         if key not in files_already_daseg.keys():
             try:
                 # Process the file
-                print(f"Processing file: {key}")
+                print(f"Processing file: {key}", flush=True)
                 process_file(files_to_daseg[key], args.output_dir, col_with_text=args.col_with_text)
             except Exception as e:
                 print(e)
 
+    print(f"Time for processing {len(files_to_daseg)} was {time.time() - start_time:.4f} seconds")
 
 if __name__ == "__main__":
     main()
