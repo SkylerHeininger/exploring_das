@@ -427,9 +427,9 @@ if __name__=="__main__":
     # t_t_important is where the therapist thinks what the therapist said was important
     t_t_important = combined[(combined['therapist_important'] == 1) & (combined['speaker'] == 'Therapist')][DA_COLUMN]
     # Therapist thinks patient said something important
-    t_p_important = combined[(combined['therapist_important'] == 1) & (combined['speaker'] != 'Therapist')][DA_COLUMN]
+    t_p_important = combined[(combined['therapist_important'] == 1) & (combined['speaker'] == 'Patient')][DA_COLUMN]
     p_t_important = combined[(combined['patient_important'] == 1) & (combined['speaker'] == 'Therapist')][DA_COLUMN]
-    p_p_important = combined[(combined['patient_important'] == 1) & (combined['speaker'] != 'Therapist')][DA_COLUMN]
+    p_p_important = combined[(combined['patient_important'] == 1) & (combined['speaker'] == 'Patient')][DA_COLUMN]
     print(f"TT importance num: {len(t_t_important)}\n \
 TP importance num: {len(t_p_important)}\n \
 PT importance num: {len(p_t_important)}\n \
