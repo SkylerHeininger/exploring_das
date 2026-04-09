@@ -22,7 +22,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 import json
-
+from scipy.stats import mannwhitneyu
+from statsmodels.stats.multitest import multipletests
 
 DA_COLUMN = 'Proc_DA'
 # These variables are for the file-level, not full dataset
@@ -234,7 +235,39 @@ def graph_comparison_of_groups_full(groups: dict, col: str, sorted_columns=None,
         n_groups
     )
 
+    # Mann-Whitney U for each label, then do FDR correction
+    # Only doing this for two groups
+    if n_groups == 2:
+        name_a, name_b = group_names
+        series_a, series_b = groups[name_a], groups[name_b]
+
+        p_values = []
+        for label in sorted_columns:
+            a = (series_a == label).astype(int)
+            b = (series_b == label).astype(int)
+            _, p = mannwhitneyu(a, b, alternative='two-sided')
+            p_values.append(p)
+
+        _, p_fdr, _, _ = multipletests(p_values, method='fdr_bh')
+        significant = p_fdr < 0.05
+    else:
+        significant = [False] * n_labels
+
+    max_freq = max(
+        freq.reindex(sorted_columns, fill_value=0).max()
+        for freq in group_freqs.values()
+    )
+
     plt.figure(figsize=[13, 5], clear=True)
+
+    is_star_plotted = False
+    for i, (label, sig) in enumerate(zip(sorted_columns, significant)):
+        if sig:
+            if not is_star_plotted:
+                plt.plot(x[i], max_freq * 3, 'r*', markersize=10, label=r'$p_{fdr}<0.05$')
+                is_star_plotted = True
+            else:
+                plt.plot(x[i], max_freq * 3, 'r*', markersize=10)
 
     for name, color, offset in zip(group_names, colors, offsets):
         freqs = group_freqs[name].reindex(sorted_columns, fill_value=0)
@@ -245,6 +278,7 @@ def graph_comparison_of_groups_full(groups: dict, col: str, sorted_columns=None,
             label=f'{name} (n={n})',
             color=color, alpha=0.7
         )
+
 
     plt.title(f'{title_prefix} DA distribution' if title_prefix else 'DA distribution')
     plt.xlabel('DA Label')
