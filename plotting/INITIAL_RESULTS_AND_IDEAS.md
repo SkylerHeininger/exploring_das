@@ -9,7 +9,7 @@ as the therapist and patient take much different roles in the conversation.
 
 ![patient-therapist comparison](group_output/Speaker%20Comparison%20of%20DA%20groups_da_distribution.png "Speaker Comparison")
 
-Here, we see the therapist asking far more answers and hedges from the patient, along with more questions from the therapist.
+Here, we see the therapist asking far more quesitons, with more hedges and answers from the patient.
 
 
 ### Importance DA comparisons

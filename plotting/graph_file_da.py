@@ -24,11 +24,15 @@ import matplotlib.cm as cm
 import json
 from scipy.stats import mannwhitneyu
 from statsmodels.stats.multitest import multipletests
+from IPython.display import display, HTML
+import tempfile
+import webbrowser
 
 DA_COLUMN = 'Proc_DA'
 # These variables are for the file-level, not full dataset
 SAVE_GRAPHS = True
 SHOW_GRAPHS = True
+RENDER_TRANSCRIPT = False
 
 # Defined groups of DAs
 DA_GROUPS = {
@@ -72,6 +76,20 @@ GROUP_COLORS = {
     "answers":     "#55A868",
     "misc":        "#C44E52",
     "statement":    "#D6EF57"
+}
+
+
+CODES = {
+    "BCS": "Building coping skills to avoid substance use",
+    "ERT": "Emphasizing ongoing reality testing",
+    "ECE": "Encouraging patients to engage in corrective experiences",
+    "FTA": "Facilitating the therapeutic alliance",
+    "FSU": "Focusing directly on substance use",
+    "HPM": "Fostering hope, positive expectations, and motivation",
+    "IDR": "Identifying resources",
+    "IAI": "Increasing awareness and insight",
+    "STK": "Social talk",
+    "VLD": "Validating"
 }
 
 # For negative non-answers - could be specifically interesting in cases where the patient is asked something,
@@ -329,8 +347,8 @@ def graph_comparison_of_groups_full(groups: dict, col: str, sorted_columns=None,
 
 
 
-def graph_file(filename, word_col="spoken_text", target_col="Proc DA Class", skip_individual_graphing=True,
-               show_da_class=False, importance="both", save=SAVE_GRAPHS, show=SHOW_GRAPHS, outdir="output/"):
+def graph_file(filename, word_col="spoken_text", target_col="Proc_DA", skip_individual_graphing=True,
+               show_da_class=False, importance="both", save=SAVE_GRAPHS, show=SHOW_GRAPHS, render=RENDER_TRANSCRIPT, outdir="output/"):
     """
     Will call all appropriate graphing functions for a file.
     :param filename: String filename
@@ -352,6 +370,11 @@ def graph_file(filename, word_col="spoken_text", target_col="Proc DA Class", ski
              'therapist_code': 'max',
              'timestamp': 'max'
          }))
+    
+    if render:
+        render_daseg(df_da_level, da_column=DA_COLUMN)
+        # Wait fo rinput as otherwise this spams browser with 30 tabs
+        input()
     
     # Just using this function for the graphing
     if skip_individual_graphing:
@@ -406,6 +429,221 @@ def graph_file(filename, word_col="spoken_text", target_col="Proc DA Class", ski
     graph_comparison_of_groups(df_p_codes, title_prefix="Patient Code Comparison")
     
     return df_da_level
+
+def render_daseg(df_da_level, da_column='Proc_DA'):
+    """
+    Renders important turns from df_da_level in a DAseg-style visualization.
+    """
+    turns = []
+    for _, row in df_da_level.iterrows():
+        p_t_codes = str(row["therapist_code"] if row["therapist_important"] == 1 else row["patient_code"]).split(",")
+        codes = ""
+        for p_t_code in p_t_codes:
+            p_t_code = p_t_code.strip()
+            if p_t_code != 'nan':
+                codes += CODES[p_t_code] + ","
+            else:
+                codes += "NA,"
+        turns.append({
+            "speaker":     str(row['speaker']),
+            "da_number":   int(row['DA_number']),
+            "spoken_text":        str(row['spoken_text']),
+            "da_tag":      str(row[da_column]),
+            "therapist_important": int(row['therapist_important']),
+            "patient_important": int(row['patient_important']),
+            "code": codes
+        })
+
+    turns_json = json.dumps(turns)
+
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>DAseg viewer</title>
+<style>
+  body {{ font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; background: #fff; color: #111; }}
+  .turn-row {{ display: flex; align-items: flex-start; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }}
+  .speaker-label {{ font-weight: 500; font-size: 13px; min-width: 18px; color: #666; padding-top: 4px; }}
+  .segments-wrap {{ display: flex; flex-wrap: wrap; gap: 6px; flex: 1; }}
+  .da-segment {{ display: inline-flex; flex-direction: column; padding: 5px 10px; border-radius: 6px; }}
+  .da-text {{ font-size: 13px; line-height: 1.4; }}
+  .da-label {{ font-size: 9px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; margin-top: 3px; opacity: 0.85; }}
+  .legend {{ display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 1.25rem; padding-bottom: 1rem; border-bottom: 1px solid #e5e5e5; }}
+  .legend-item {{ display: flex; align-items: center; gap: 5px; font-size: 12px; color: #555; }}
+  .legend-swatch {{ width: 12px; height: 12px; border-radius: 3px; }}
+  .nav-bar {{ display: flex; align-items: center; gap: 12px; margin-bottom: 1.25rem; padding-bottom: 1rem; border-bottom: 1px solid #e5e5e5; }}
+  .nav-bar button {{ padding: 4px 14px; font-size: 13px; cursor: pointer; border: 1px solid #ccc; border-radius: 4px; background: #fff; }}
+  .nav-bar button:disabled {{ opacity: 0.35; cursor: default; }}
+  .chunk-label {{ font-size: 13px; color: #666; }}
+  .chunk-meta {{ font-size: 12px; color: #888; margin-bottom: 0.75rem; }}
+</style>
+</head>
+<body>
+<div id="legend" class="legend"></div>
+<div class="nav-bar">
+  <button id="btn-prev">← prev</button>
+  <span class="chunk-label" id="chunk-label"></span>
+  <button id="btn-next">next →</button>
+</div>
+<div class="chunk-meta" id="chunk-meta"></div>
+
+<div id="da-output"></div>
+
+<script>
+const DA_COLORS = {{
+  "STATEMENT-NON-OPINION":       {{bg:"#2563A8",text:"#EAF2FB",label:"#90BDE8"}},
+  "STATEMENT-OPINION":           {{bg:"#1A3F7A",text:"#EAF2FB",label:"#5A8FD4"}},
+  "ACKNOWLEDGE-BACKCHANNEL":     {{bg:"#7B3FA0",text:"#F5EEFF",label:"#C99EE0"}},
+  "AFFIRMATIVE-NON-YES-ANSWERS": {{bg:"#1A7A3F",text:"#E8F7EE",label:"#6FCA97"}},
+  "DECLARATIVE-YES-NO-QUESTION": {{bg:"#C0392B",text:"#FDECEA",label:"#F1A89E"}},
+  "YES-NO-QUESTION":             {{bg:"#A93226",text:"#FDECEA",label:"#E8847C"}},
+  "WH-QUESTION":                 {{bg:"#D35B8E",text:"#FEF0F6",label:"#F0A8C8"}},
+  "OPEN-QUESTION":               {{bg:"#B03A6A",text:"#FEF0F6",label:"#E07AA8"}},
+  "CONVENTIONAL-CLOSING":        {{bg:"#17718A",text:"#E5F5FA",label:"#72C4D8"}},
+  "CONVENTIONAL-OPENING":        {{bg:"#0E4D63",text:"#E5F5FA",label:"#3FA3C0"}},
+  "APOLOGY":                     {{bg:"#7A6A10",text:"#FDFBE8",label:"#D4C040"}},
+  "THANKING":                    {{bg:"#4A7A10",text:"#F0FAE5",label:"#9FCC55"}},
+  "OTHER":                       {{bg:"#888780",text:"#F1EFE8",label:"#D3D1C7"}},
+  "UNINTERPRETABLE":             {{bg:"#5F5E5A",text:"#F1EFE8",label:"#B4B2A9"}},
+  "HEDGE":                       {{bg:"#BA7517",text:"#FAEEDA",label:"#FAC775"}},
+  "SIGNAL-NON-UNDERSTANDING":    {{bg:"#8B1A1A",text:"#FDECEA",label:"#D97070"}},
+  "ACTION-DIRECTIVE":            {{bg:"#2E7D5E",text:"#E8F7EE",label:"#6ABFA0"}},
+  "RHETORICAL-QUESTION":         {{bg:"#E8735A",text:"#FEF0ED",label:"#F4B5A5"}},
+  "NO-ANSWER":                   {{bg:"#3A5A3A",text:"#EBF5EB",label:"#80B080"}},
+  "REJECT":                      {{bg:"#6B1A1A",text:"#FDECEA",label:"#C06060"}},
+}};
+
+function getColor(da) {{
+  return DA_COLORS[(da||"").toUpperCase().trim()] || {{bg:"#888780",text:"#F1EFE8",label:"#D3D1C7"}};
+}}
+
+const turns = {turns_json};
+
+// Split into contiguous important chunks with nonimportant before and after
+const CONTEXT = 15;
+const chunks = [];
+
+// First find all contiguous important blocks
+const blocks = [];
+let block = null;
+turns.forEach((t, i) => {{
+  if (t.therapist_important || t.patient_important) {{
+    if (!block) {{ block = {{ start: i, end: i }}; }}
+    else {{ block.end = i; }}
+  }} else {{
+    if (block) {{ blocks.push(block); block = null; }}
+  }}
+}});
+if (block) blocks.push(block);
+
+// Then build each chunk with clamped context that doesn't overlap adjacent blocks
+blocks.forEach((b, bi) => {{
+  const prevBlockEnd   = bi > 0 ? blocks[bi-1].end : -1;
+  const nextBlockStart = bi < blocks.length-1 ? blocks[bi+1].start : turns.length;
+
+  const contextStart = Math.max(prevBlockEnd + 1, b.start - CONTEXT);
+  const contextEnd   = Math.min(nextBlockStart - 1, b.end + CONTEXT);
+
+  chunks.push({{
+    turns: turns.slice(contextStart, contextEnd + 1),
+    importantStart: b.start,
+    importantEnd: b.end,
+  }});
+}});
+
+let idx = 0;
+
+function renderChunk() {{
+  const chunk = chunks[idx];
+  document.getElementById("chunk-label").textContent = `chunk ${{idx+1}} of ${{chunks.length}}`;
+  document.getElementById("btn-prev").disabled = idx === 0;
+  document.getElementById("btn-next").disabled = idx === chunks.length - 1;
+
+  const impTurns = chunk.turns.filter(t => t.therapist_important || t.patient_important);
+  document.getElementById("chunk-meta").textContent =
+    `turns ${{impTurns[0].da_number}}–${{impTurns[impTurns.length-1].da_number}}`;
+
+  const firstCode = (impTurns[0].code || "").replace(/,$/, "");
+  const important = impTurns[0].therapist_important && impTurns[0].patient_important
+    ? "Important to: Therapist & Patient"
+    : impTurns[0].therapist_important
+      ? "Important to: Therapist"
+      : "Important to: Patient";
+  const codeDisplay = firstCode
+    ? `<div style="font-size:12px;color:#555;margin-bottom:0.6rem;"><strong>Code:</strong> ${{firstCode}} &nbsp;|&nbsp; <strong>${{important}}</strong></div>`
+    : `<div style="font-size:12px;color:#555;margin-bottom:0.6rem;"><strong>${{important}}</strong></div>`;
+
+  const grouped = [];
+  let g = null;
+  chunk.turns.forEach(t => {{
+    if (!g || g.speaker !== t.speaker || g.da_number !== t.da_number) {{
+      g = {{speaker: t.speaker, da_number: t.da_number, segments: [], important: !!(t.therapist_important || t.patient_important)}};
+      grouped.push(g);
+    }}
+    g.segments.push(t);
+  }});
+
+  let html = codeDisplay;
+  let inImportant = false;
+
+  grouped.forEach(g => {{
+    if (g.important && !inImportant) {{
+      html += `<div style="border-top:2px dashed #E24B4A;margin:10px 0 6px;padding-top:6px;font-size:11px;color:#E24B4A;font-weight:600;letter-spacing:0.05em;">▶ IMPORTANT TURNS BEGIN <br><span style="color:#555;font-weight:400;font-size:12px;">${{firstCode ? "<strong>Code:</strong> " + firstCode + " &nbsp;|&nbsp; " : ""}}<strong>${{important}}</strong></span></div>`;
+      inImportant = true;
+    }} else if (!g.important && inImportant) {{
+      html += `<div style="border-top:2px dashed #E24B4A;margin:10px 0 6px;padding-top:6px;font-size:11px;color:#E24B4A;font-weight:600;letter-spacing:0.05em;">◀ IMPORTANT TURNS END</div>`;
+      inImportant = false;
+    }}
+
+    const segs = g.segments.map(s => {{
+      const c = getColor(s.da_tag);
+      return `<span class="da-segment" style="background:${{c.bg}};${{g.important ? "" : "opacity:0.45;"}}">
+        <span class="da-text" style="color:${{c.text}}">${{s.spoken_text||""}}</span>
+        <span class="da-label" style="color:${{c.label}}">${{(s.da_tag||"").toUpperCase()}}</span>
+      </span>`;
+    }}).join("");
+
+    html += `<div class="turn-row">
+      <span class="speaker-label" style="${{g.important ? "" : "opacity:0.45;"}}">${{g.speaker}}:</span>
+      <div class="segments-wrap">${{segs}}</div>
+    </div>`;
+  }});
+
+  if (inImportant) {{
+    html += `<div style="border-top:2px dashed #E24B4A;margin:10px 0 6px;font-size:11px;color:#E24B4A;font-weight:600;letter-spacing:0.05em;">◀ IMPORTANT TURNS END</div>`;
+  }}
+
+  document.getElementById("da-output").innerHTML = html;
+}}
+
+// Build legend from all turns
+const seen = new Set(turns.map(t => (t.da_tag||"").toUpperCase().trim()).filter(Boolean));
+const legend = document.getElementById("legend");
+seen.forEach(da => {{
+  const c = getColor(da);
+  legend.innerHTML += `<div class="legend-item"><div class="legend-swatch" style="background:${{c.bg}}"></div>${{da}}</div>`;
+}});
+
+if (chunks.length) {{
+  renderChunk();
+}} else {{
+  document.getElementById("da-output").textContent = "No important turns found.";
+}}
+
+document.getElementById("btn-prev").addEventListener("click", () => {{ if(idx>0){{idx--;renderChunk();}} }});
+document.getElementById("btn-next").addEventListener("click", () => {{ if(idx<chunks.length-1){{idx++;renderChunk();}} }});
+</script>
+</body>
+</html>"""
+
+    # Write to a temp file and open in browser
+    tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.html', delete=False, encoding='utf-8')
+    tmp.write(html)
+    tmp.close()
+    webbrowser.open(f'file://{tmp.name}')
+    print(f"Opened: {tmp.name}")
+
 
 
 def break_down_relationships(groups, target_col, title_prefix, outdir="group_output/", save=True, show=False):
@@ -529,7 +767,17 @@ if __name__=="__main__":
     a_t_comparison = {'Important': all_important, 'NonImportant': non_important}
     graph_comparison_of_groups_full(a_t_comparison, col=DA_COLUMN, title_prefix="Important-NonImportant Comparison", show=False, save=True)
 
-    break_down_relationships(a_t_comparison, target_col=DA_COLUMN, title_prefix="Importance Comparison of DA groups", outdir="group_output", show=True, save=True)
+    break_down_relationships(a_t_comparison, target_col=DA_COLUMN, title_prefix="Importance Comparison of DA groups", outdir="group_output", show=False, save=True)
+
+    non_p_important = combined[combined['patient_important'] != 1][DA_COLUMN]
+    p_n_comparison = {'important': p_important, 'nonimportant': non_p_important}
+    break_down_relationships(p_n_comparison, target_col=DA_COLUMN, title_prefix="Patient Importance Comparison of DA groups", outdir="group_output", show=True, save=True)
+    graph_comparison_of_groups_full(p_n_comparison, col=DA_COLUMN, title_prefix="Patient Importance Comparison", show=True, save=True)
+    non_t_important = combined[combined['therapist_important'] != 1][DA_COLUMN]
+    t_n_comparison = {'important': t_important, 'nonimportant': non_t_important}
+    break_down_relationships(t_n_comparison, target_col=DA_COLUMN, title_prefix="Therapist Importance Comparison of DA groups", outdir="group_output", show=True, save=True)
+    graph_comparison_of_groups_full(t_n_comparison, col=DA_COLUMN, title_prefix="Therapist Importance Comparison", show=True, save=True)
+
 
     # Compare importance across speaker
     # t_t_important is where the therapist thinks what the therapist said was important
