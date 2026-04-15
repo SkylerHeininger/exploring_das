@@ -32,9 +32,15 @@ Here we see some more statistical significances, but nothing really important. M
 
 This includes the above comparisons, along withs some cross-speaker and cross-importance comparisons. Overall, comparing the DAs between speakers has the most significant / easily explanable features.
 
+`graph_file_da.py` now includes a tool for manually rendering the dialogue acts in conversation, specifically surrounding important turns, making it easier to see what is happening within the conversations.
+
+`get_question_response_patterns.py` looks at the run lengths for responses of each speaker when the patient and therapist ask questions. For example, how does the run length differ when patient asks therapist a question vs therapist asks patient a quesiton. This is done over patient and therapist importance separately, since there seem to be differences in labeling patterns between patient and therapist. Tihs file also looked at the DA's across codes, seeing differing distributions across different codes. This somewhat suggests we may need to group some codes or make a classifier that identifies different codes (harder but may be needed).
+
+`view_common_patterns.py` attempts to find different common patterns in important-labeled turns, compared across codes.
+
 ### Next steps
 
-- Look at important turns more manually and see what is happening - are ther any patterns, etc?
+- Look for more common patterns - directly for question followed by statements, question statement question statement, etc, across codes.
 - Check across therapists, to see how different different therapists communicate
 - Check the train test split and see how this differs
 

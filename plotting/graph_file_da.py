@@ -31,8 +31,8 @@ import webbrowser
 DA_COLUMN = 'Proc_DA'
 # These variables are for the file-level, not full dataset
 SAVE_GRAPHS = True
-SHOW_GRAPHS = True
-RENDER_TRANSCRIPT = False
+SHOW_GRAPHS = False
+RENDER_TRANSCRIPT = True
 
 # Defined groups of DAs
 DA_GROUPS = {

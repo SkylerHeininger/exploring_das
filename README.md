@@ -26,6 +26,8 @@ In the `plotting` folder, there contains several scripts for some initial plots 
 
 `graph_file_da.py` is in-progress, with the purpose of exploring DAs throughout a transcript, rather than just at the frequency level.
 
+`get_question_response_patterns.py` looks for question-response patterns. This primarily looks at if a question DA is followed by statements, and if so, for how long do the statements run (for a person). The idea being, some codes may see more of a long response for a person.
+
 
 ## Setup
 
