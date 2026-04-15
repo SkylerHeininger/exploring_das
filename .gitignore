@@ -211,4 +211,7 @@ output/
 plotting/output/
 plotting/group_output/
 plotting/qsh_output/
+code_da_output/
+archive/
+da_pattern_output/
 DA_notes.txt
