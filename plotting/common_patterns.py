@@ -56,25 +56,26 @@ from statsmodels.stats.multitest import multipletests
 from graph_file_da import DA_COLUMN, DA_GROUPS
 
 # ── extended DA group definitions ─────────────────────────────────────────────
-# Questions (canonical + non-canonical) merged into one group.
-# Answers  (canonical + non-canonical) merged into one group.
-# Five new groups cover previously unmapped DAs from daseg.
 
 EXTENDED_DA_GROUPS: dict[str, list[str]] = {
-    # merged from original two question groups
-    "questions": [
+    # canonical questions follow standard framing  e.g. "Did you like the play?"
+    "canonical_questions": [
         "Wh-Question", "Yes-No-Question", "Open-Question", "Or-Clause",
-        "Declarative-Yes-No-Question", "Rhetorical-Questions",
-        "Backchannel-in-question-form", "Tag-Question",
-        "Declarative-Wh-Question",
     ],
-    # merged from original two answer groups
-    "answers": [
+    # non-canonical questions don't follow standard framing  e.g. "You liked the play?"
+    "non_canonical_questions": [
+        "Declarative-Yes-No-Question", "Rhetorical-Questions",
+        "Backchannel-in-question-form", "Tag-Question", "Declarative-Wh-Question",
+    ],
+    # canonical answers follow a standard response  e.g. "Yes, I liked the play."
+    "canonical_answers": [
         "Yes-answers", "No-answers",
+    ],
+    # non-canonical answers follow a non-standard response  e.g. "The play was ok."
+    "non_canonical_answers": [
         "Affirmative-non-yes-answers", "Other-answers",
         "Negative-non-no-answers", "Dispreferred-answers", "Reject",
     ],
-    # kept from original
     "backchannel": [
         "Hold-before-answer-agreement", "Acknowledge-Backchannel",
         "Response-Acknowledgement",
@@ -109,17 +110,19 @@ EXTENDED_DA_GROUPS: dict[str, list[str]] = {
 
 # Short display abbreviations for axis labels and graph nodes
 DA_GROUP_ABBREV: dict[str, str] = {
-    "questions":      "Q",
-    "answers":        "A",
-    "backchannel":    "BC",
-    "statements":     "ST",
-    "hedge":          "HG",
-    "social_ritual":  "SR",
-    "acknowledgement": "ACK",
-    "elaboration":    "EL",
-    "action":         "ACT",
-    "noise":          "NS",
-    "other":          "OT",
+    "canonical_questions":     "CQ",
+    "non_canonical_questions": "NCQ",
+    "canonical_answers":       "CA",
+    "non_canonical_answers":   "NCA",
+    "backchannel":             "BC",
+    "statements":              "ST",
+    "hedge":                   "HG",
+    "social_ritual":           "SR",
+    "acknowledgement":         "ACK",
+    "elaboration":             "EL",
+    "action":                  "ACT",
+    "noise":                   "NS",
+    "other":                   "OT",
 }
 
 _N = len(DA_GROUP_ABBREV)
@@ -127,6 +130,58 @@ _CMAP = plt.get_cmap("tab20")
 DA_GROUP_COLORS: dict[str, str] = {
     g: mcolors.to_hex(_CMAP(i / _N)) for i, g in enumerate(DA_GROUP_ABBREV)
 }
+
+# ── run-length bucketing ──────────────────────────────────────────────────────
+# Per-group thresholds: (short_max, medium_max).
+# A run of length L is bucketed as:
+#   short  : 1  <= L <= short_max
+#   medium : short_max < L <= medium_max
+#   long   : L  >  medium_max
+#
+# Statements are typically longer, so they get wider bins.
+# Every group not listed here uses the DEFAULT_BUCKET entry.
+# Edit this dict to tune thresholds without touching any other code.
+
+RUN_LENGTH_BUCKETS: dict[str, tuple[int, int]] = {
+    # group_name          : (short_max, medium_max)
+    "statements"          : (2, 8),
+    # all other groups use DEFAULT_BUCKET below
+}
+_DEFAULT_BUCKET: tuple[int, int] = (1, 3)  # short 1, medium 2-3, long 4+
+
+
+def _bucket_label(base_label: str, run_length: int, granularity: str) -> str:
+    """
+    Return a bucketed node label like "ST_medium" or "Wh-Q_short".
+
+    *base_label* is the plain group or raw DA string (already resolved by
+    get_label before bucketing).  *run_length* is the number of consecutive
+    DA rows in this contiguous region.
+
+    For raw granularity, bucket thresholds are looked up by the *group* the
+    DA belongs to, so Statement-opinion and Statement-non-opinion both use
+    the "statements" thresholds.
+    """
+    # Determine which threshold to use
+    group_key = base_label if granularity == "groups" else map_da_to_group(base_label)
+    short_max, medium_max = RUN_LENGTH_BUCKETS.get(group_key, _DEFAULT_BUCKET)
+
+    if run_length <= short_max:
+        bucket = "short"
+    elif run_length <= medium_max:
+        bucket = "medium"
+    else:
+        bucket = "long"
+
+    return f"{base_label}_{bucket}"
+
+
+def _strip_bucket(label: str) -> str:
+    """Remove the _short / _medium / _long suffix from a bucketed label."""
+    for suffix in ("_short", "_medium", "_long"):
+        if label.endswith(suffix):
+            return label[: -len(suffix)]
+    return label
 
 # ── DA -> group mapping ───────────────────────────────────────────────────────
 
@@ -186,24 +241,72 @@ def get_label(row_da: str, row_group: str, granularity: str) -> str:
 
 
 def abbrev(label: str, granularity: str) -> str:
-    """Short string for axis labels and graph node text."""
+    """Short string for axis labels and graph node text.
+    For bucketed labels (e.g. 'statements_medium') the suffix is kept but
+    the base is abbreviated: 'ST_med'.
+    """
+    # Detect and split bucket suffix
+    bucket_suffix = ""
+    for sfx, short in (("_short", "_S"), ("_medium", "_M"), ("_long", "_L")):
+        if label.endswith(sfx):
+            bucket_suffix = short
+            label = label[: -len(sfx)]
+            break
+
     if granularity == "groups":
-        return DA_GROUP_ABBREV.get(label, label)
-    # For raw DAs, abbreviate common suffixes so labels fit in graph nodes
-    return (label
-            .replace("-Question", "-Q")
-            .replace("-answers", "-A")
-            .replace("Statement-", "ST-")
-            .replace("Acknowledge-", "Ack-")
-            .replace("Conventional-", "Conv-")
-            .replace("Collaborative-", "Collab-"))
+        base = DA_GROUP_ABBREV.get(label, label)
+    else:
+        base = (label
+                .replace("-Question", "-Q")
+                .replace("-answers", "-A")
+                .replace("Statement-", "ST-")
+                .replace("Acknowledge-", "Ack-")
+                .replace("Conventional-", "Conv-")
+                .replace("Collaborative-", "Collab-"))
+    return base + bucket_suffix
 
 
 def node_color(label: str, granularity: str) -> str:
+    """Return hex colour for a node, stripping any bucket suffix first."""
+    base = _strip_bucket(label)
     if granularity == "groups":
-        return DA_GROUP_COLORS.get(label, "#aaaaaa")
-    grp = map_da_to_group(label)
+        return DA_GROUP_COLORS.get(base, "#aaaaaa")
+    grp = map_da_to_group(base)
     return DA_GROUP_COLORS.get(grp, "#aaaaaa")
+
+
+# ── run-length analysis helpers ───────────────────────────────────────────────
+
+def compute_node_mean_run_lengths(
+    sequences: list[list[str]],
+) -> dict[str, float]:
+    """
+    For each unique base label (stripping any bucket suffix), compute the
+    mean run length across all contiguous regions in *sequences*.
+
+    Used for Option D: encoding mean run length as node size in the
+    transition graph, independent of whether bucketing is active.
+
+    Returns {base_label: mean_run_length}.
+    """
+    run_totals: dict[str, list[int]] = {}
+    for seq in sequences:
+        if not seq:
+            continue
+        current = seq[0]
+        count   = 1
+        for item in seq[1:]:
+            if item == current:
+                count += 1
+            else:
+                base = _strip_bucket(current)
+                run_totals.setdefault(base, []).append(count)
+                current = item
+                count   = 1
+        base = _strip_bucket(current)
+        run_totals.setdefault(base, []).append(count)
+
+    return {label: float(np.mean(runs)) for label, runs in run_totals.items()}
 
 
 # ── important-block extraction ────────────────────────────────────────────────
@@ -214,6 +317,47 @@ def _parse_codes(raw) -> list[str]:
     return codes if codes else ["NA"]
 
 
+def _labels_from_df(
+    df: pd.DataFrame,
+    granularity: str,
+    bucketed_runs: bool,
+) -> list[str]:
+    """
+    Build the per-row label list for a DA-level DataFrame.
+
+    Plain mode (bucketed_runs=False):
+        Each row gets its group or raw DA string unchanged.
+
+    Bucketed mode (bucketed_runs=True):
+        We first identify every contiguous run of identical base labels,
+        measure its length, then emit a bucketed label (e.g. "ST_medium")
+        for every row in that run.  This means rows that are part of a long
+        statement run all get "ST_long" rather than just "ST", so downstream
+        RLE compression collapses the whole run to a single "ST_long" node.
+    """
+    base_labels = [
+        get_label(row[DA_COLUMN], row["da_group"], granularity)
+        for _, row in df.iterrows()
+    ]
+    if not bucketed_runs:
+        return base_labels
+
+    # Two-pass: find run boundaries and lengths, then emit bucketed labels
+    n      = len(base_labels)
+    result = [""] * n
+    i      = 0
+    while i < n:
+        j = i + 1
+        while j < n and base_labels[j] == base_labels[i]:
+            j += 1
+        run_len  = j - i
+        bucketed = _bucket_label(base_labels[i], run_len, granularity)
+        for k in range(i, j):
+            result[k] = bucketed
+        i = j
+    return result
+
+
 def extract_important_blocks(
     df: pd.DataFrame,
     importance_col: str,
@@ -221,21 +365,22 @@ def extract_important_blocks(
     granularity: str,
     context_window: int = 15,
     include_context_in_block: bool = False,
+    bucketed_runs: bool = False,
 ) -> list[dict]:
     """
     Find contiguous runs where importance_col == 1.
 
+    When bucketed_runs=True each label is suffixed with its run-length
+    bucket (_short / _medium / _long) so downstream RLE compression
+    produces nodes like "ST_long" instead of plain "ST".
+
     Returns list of dicts with keys:
       codes, block_indices, pre_indices, post_indices,
       full_sequence, block_sequence, pre_sequence, post_sequence
-    All sequence lists contain label strings per granularity.
     """
     importance = df[importance_col].fillna(0).astype(int)
-    labels = [
-        get_label(row[DA_COLUMN], row["da_group"], granularity)
-        for _, row in df.iterrows()
-    ]
-    n = len(df)
+    labels     = _labels_from_df(df, granularity, bucketed_runs)
+    n          = len(df)
     blocks: list[dict] = []
 
     i = 0
@@ -287,25 +432,12 @@ def extract_nonimportant_sequences(
     granularity: str,
     context_window: int = 15,
     include_context_in_block: bool = False,
+    bucketed_runs: bool = False,
 ) -> list[list[str]]:
     """
-    Return the DA sequences from rows that are NOT part of any important block
-    for either speaker (patient_important or therapist_important).
-
-    When include_context_in_block is True the ±context_window rows around
-    every important block are also excluded, because those rows are already
-    "owned" by the important partition.  When False, those context rows remain
-    in the non-important pool (consistent with how run_analysis treats them).
-
-    Contiguous runs of non-important rows are kept as separate sequences so
-    session boundaries and topic changes are not accidentally bridged.
-
-    Returns a list of per-run label sequences (one list per contiguous run).
+    Return DA sequences from rows not claimed by any important partition.
+    When bucketed_runs=True labels include run-length suffixes.
     """
-    pat_imp  = df["patient_important"].fillna(0).astype(int)
-    ther_imp = df["therapist_important"].fillna(0).astype(int)
-
-    # Build a boolean mask of rows that are "claimed" by either important partition
     n       = len(df)
     claimed = np.zeros(n, dtype=bool)
 
@@ -317,9 +449,7 @@ def extract_nonimportant_sequences(
                 j = i
                 while j < n and importance.iloc[j] == 1:
                     j += 1
-                # Always claim the block itself
                 claimed[i:j] = True
-                # Claim context too when it is merged into the block
                 if include_context_in_block:
                     pre_start = max(0, i - context_window)
                     post_end  = min(n, j + context_window)
@@ -329,12 +459,8 @@ def extract_nonimportant_sequences(
             else:
                 i += 1
 
-    labels = [
-        get_label(row[DA_COLUMN], row["da_group"], granularity)
-        for _, row in df.iterrows()
-    ]
+    labels = _labels_from_df(df, granularity, bucketed_runs)
 
-    # Split unclaimed rows into contiguous runs
     sequences: list[list[str]] = []
     current_run: list[str] = []
     for idx in range(n):
@@ -514,13 +640,21 @@ def plot_transition_graph(
     fname: str,
     graph_order: int = 1,
     min_edge_weight: int = 2,
+    node_run_lengths: dict[str, float] | None = None,
     save: bool = True,
     show: bool = False,
 ) -> nx.DiGraph | None:
     """
     Directed transition graph over RLE-compressed sequences.
 
-    graph_order=1  (default — original behaviour)
+    node_run_lengths (Option D)
+        Optional dict mapping base label -> mean run length (from
+        compute_node_mean_run_lengths).  When provided, node SIZE encodes
+        mean run length rather than outgoing edge weight, giving an immediate
+        visual answer to "which groups tend to appear in long runs?".
+        Node colour still encodes DA group.  Works in both plain and bucketed
+        modes: in bucketed mode the node "ST_medium" looks up "ST" in the dict.
+    
         Nodes = individual DA group/class labels
         Edges = bigram (A->B) transitions
         Captures sequences of length 2.
@@ -564,10 +698,20 @@ def plot_transition_graph(
     edge_widths = [0.8 + 6.0 * (G[u][v]["weight"] / max_w) for u, v in G.edges()]
     edge_alphas = [0.2  + 0.7 * (G[u][v]["weight"] / max_w) for u, v in G.edges()]
 
-    node_sizes = []
-    for node in G.nodes():
-        out_total = sum(d["weight"] for _, _, d in G.out_edges(node, data=True))
-        node_sizes.append(500 + 2500 * (out_total / (max_w * max(len(G), 1))))
+    # Option D: node size encodes mean run length when supplied;
+    # otherwise falls back to total outgoing edge weight (original behaviour).
+    if node_run_lengths:
+        max_rl = max(node_run_lengths.values()) if node_run_lengths else 1.0
+        node_sizes = []
+        for node in G.nodes():
+            base = _strip_bucket(node[-1] if isinstance(node, tuple) else node)
+            rl   = node_run_lengths.get(base, 1.0)
+            node_sizes.append(400 + 2800 * (rl / max(max_rl, 1.0)))
+    else:
+        node_sizes = []
+        for node in G.nodes():
+            out_total = sum(d["weight"] for _, _, d in G.out_edges(node, data=True))
+            node_sizes.append(500 + 2500 * (out_total / (max_w * max(len(G), 1))))
 
     node_colors = [
         DA_GROUP_COLORS.get(_node_base_group(n, granularity), "#aaaaaa")
@@ -636,6 +780,12 @@ def plot_transition_graph(
                    label=f"{DA_GROUP_ABBREV.get(g, g)}  {g}")
         for g in DA_GROUP_ABBREV if g in seen_groups
     ]
+    if node_run_lengths:
+        legend_handles.append(
+            plt.Line2D([0], [0], marker="o", color="w",
+                       markerfacecolor="#888888", markersize=6,
+                       label="node size = mean run length")
+        )
     if legend_handles:
         ax.legend(handles=legend_handles, loc="upper left",
                   fontsize=8, title="DA groups (last element)", framealpha=0.85)
@@ -1201,7 +1351,463 @@ def compute_netlsd_similarity(
     return df_sim
 
 
-# ── combined similarity report ────────────────────────────────────────────────
+# ── graph similarity: Method 3 — Magnetic Laplacian spectral distance ─────────
+
+def _magnetic_heat_trace(
+    G: nx.DiGraph,
+    time_points: np.ndarray,
+    q: float = 0.25,
+) -> np.ndarray:
+    """
+    Compute the heat trace of the magnetic Laplacian of *G*.
+
+    The magnetic Laplacian L^q is a Hermitian complex matrix that encodes
+    both the undirected connectivity of G *and* the direction of each edge
+    via a complex phase factor exp(i·2π·q·s_uv), where s_uv = +1 if the
+    directed edge goes u→v and -1 for v→u.
+
+    Construction
+    ------------
+    For each pair (u, v) where at least one directed edge exists:
+
+        w_sym  = (w_uv + w_vu) / 2        # symmetric weight
+        s_uv   = (w_uv - w_vu) / (w_uv + w_vu + ε)   # net directionality in [-1,1]
+
+    The magnetic adjacency entry:
+        H_uv = w_sym · exp( i·2π·q·s_uv )
+        H_vu = conj(H_uv)
+
+    The degree matrix D_ii = sum_j w_sym_ij (real, same as undirected degree).
+
+    L^q = D - Re(H)  … for the eigenvalue computation we use the real
+    part of the normalised version, which keeps eigenvalues real and ≥ 0
+    while still encoding direction via the phase-weighted degree.
+
+    Why this works
+    --------------
+    When w_uv = w_vu (undirected edge) the phase is 0 and L^q reduces to
+    the standard normalised Laplacian — NetLSD and magnetic-LSD give the
+    same answer.  When edges are strongly asymmetric the phase shifts the
+    eigenvalues away from those of the symmetrised graph, so two graphs
+    that look identical after symmetrisation but have opposite directionality
+    (e.g. Q→ST everywhere vs ST→Q everywhere) will produce different spectra.
+
+    The parameter q controls phase sensitivity; q=0.25 is the canonical
+    choice (quarter-turn per unit of net directionality).  q=0 recovers
+    the undirected NetLSD.
+
+    Returns a 1-D real array of length len(time_points).
+    """
+    nodes = sorted(G.nodes())
+    n     = len(nodes)
+    if n == 0:
+        return np.zeros(len(time_points))
+
+    idx = {v: i for i, v in enumerate(nodes)}
+
+    # Build symmetric weight and net-directionality matrices
+    W_sym  = np.zeros((n, n))   # (w_uv + w_vu) / 2
+    S      = np.zeros((n, n))   # net directionality  (w_uv - w_vu) / (w_uv + w_vu)
+
+    for u, v, d in G.edges(data=True):
+        i, j   = idx[u], idx[v]
+        w_fwd  = d["weight"]
+        w_bwd  = G[v][u]["weight"] if G.has_edge(v, u) else 0.0
+        total  = w_fwd + w_bwd
+        W_sym[i, j]  = total / 2.0
+        W_sym[j, i]  = total / 2.0
+        if total > 0:
+            S[i, j]  =  (w_fwd - w_bwd) / total   # +1 if purely fwd, -1 if purely bwd
+            S[j, i]  = -S[i, j]                    # antisymmetric
+
+    # Magnetic adjacency  H_ij = W_sym_ij * exp(i * 2π * q * S_ij)
+    phase = 2.0 * np.pi * q * S
+    H = W_sym * (np.cos(phase) + 1j * np.sin(phase))   # complex Hermitian
+
+    # Degree matrix (real, from symmetric weights)
+    deg       = W_sym.sum(axis=1)
+    d_inv_sqrt = np.where(deg > 0, 1.0 / np.sqrt(deg), 0.0)
+    D_inv_sqrt = np.diag(d_inv_sqrt)
+
+    # Normalised magnetic Laplacian  L^q = I - D^{-1/2} H D^{-1/2}
+    # L^q is Hermitian → eigenvalues are real
+    L_mag = np.eye(n) - D_inv_sqrt @ H @ D_inv_sqrt
+
+    # Eigenvalues of a Hermitian matrix are real
+    eigenvalues = np.linalg.eigvalsh(L_mag)
+    eigenvalues = np.clip(eigenvalues.real, 0, None)
+
+    heat_trace = np.exp(-np.outer(eigenvalues, time_points)).sum(axis=0)
+    return heat_trace.real
+
+
+def compute_magnetic_similarity(
+    code_graphs: dict[str, nx.DiGraph],
+    speaker_label: str,
+    outdir: str,
+    q: float = 0.25,
+    n_time_points: int = 250,
+    save: bool = True,
+    show: bool = False,
+) -> pd.DataFrame:
+    """
+    Compute pairwise magnetic-Laplacian spectral distance between per-code
+    transition graphs.
+
+    Unlike NetLSD (which symmetrises the adjacency matrix and loses all
+    directional information), the magnetic Laplacian encodes edge direction
+    as a complex phase.  Two graphs that look identical after symmetrisation
+    but have opposite dominant directions — e.g. one where statements mostly
+    lead to questions vs one where questions mostly lead to statements — will
+    produce different spectra and therefore different distances here.
+
+    The q parameter (default 0.25) controls how much weight the phase
+    component receives.  q=0 reduces to standard NetLSD; q=0.5 gives
+    maximum directional sensitivity.
+
+    Outputs
+    -------
+    {speaker}/similarity/magnetic_distance.csv       — raw distance matrix
+    {speaker}/similarity/magnetic_similarity.png     — heatmap (1/(1+dist))
+    {speaker}/similarity/magnetic_dendrogram.png     — hierarchical clustering
+    {speaker}/similarity/magnetic_heat_traces.png    — heat trace curves per code
+
+    Returns a DataFrame of pairwise similarities (1 / (1 + distance)).
+    """
+    sim_dir     = _subdir(outdir, speaker_label, "similarity")
+    codes       = sorted(code_graphs.keys())
+    n           = len(codes)
+
+    if n < 2:
+        print(f"  [Magnetic] Need ≥2 codes, got {n}. Skipping.")
+        return pd.DataFrame()
+
+    time_points = np.logspace(-2, 1, n_time_points)
+
+    traces: dict[str, np.ndarray] = {}
+    for code in codes:
+        ht      = _magnetic_heat_trace(code_graphs[code], time_points, q=q)
+        n_nodes = max(code_graphs[code].number_of_nodes(), 1)
+        traces[code] = ht / n_nodes
+
+    # ── heat trace plot ───────────────────────────────────────────────────────
+    fig, ax = plt.subplots(figsize=(9, 4))
+    for code in codes:
+        ax.plot(time_points, traces[code], label=str(code), linewidth=1.5)
+    ax.set_xscale("log")
+    ax.set_xlabel("Diffusion time  t  (log scale)")
+    ax.set_ylabel("Normalised magnetic heat trace  h(t) / n")
+    ax.set_title(f"{speaker_label} — Magnetic Laplacian heat traces per code  (q={q})\n"
+                 f"(encodes directed structure; overlap = similar directed topology)",
+                 fontsize=10)
+    ax.legend(fontsize=8, bbox_to_anchor=(1.01, 1), loc="upper left")
+    ax.grid(True, color="lightgrey", linewidth=0.5)
+    plt.tight_layout()
+    if save:
+        p = os.path.join(sim_dir, "magnetic_heat_traces.png")
+        plt.savefig(p, bbox_inches="tight", dpi=150);  print(f"  Saved: {p}")
+    if show:
+        plt.show()
+    plt.close()
+
+    # Pairwise L2 distance
+    dist_mat = np.zeros((n, n))
+    for i in range(n):
+        for j in range(i + 1, n):
+            d = float(np.linalg.norm(traces[codes[i]] - traces[codes[j]]))
+            dist_mat[i, j] = d
+            dist_mat[j, i] = d
+
+    sim_mat = 1.0 / (1.0 + dist_mat)
+    df_dist = pd.DataFrame(dist_mat, index=codes, columns=codes)
+    df_sim  = pd.DataFrame(sim_mat,  index=codes, columns=codes)
+
+    # ── save CSV ──────────────────────────────────────────────────────────────
+    if save:
+        p = os.path.join(sim_dir, "magnetic_distance.csv")
+        df_dist.to_csv(p, float_format="%.4f")
+        print(f"  Saved: {p}")
+
+    # ── heatmap ───────────────────────────────────────────────────────────────
+    fig, ax = plt.subplots(figsize=(max(5, n * 0.7 + 1.5), max(4, n * 0.7)))
+    im = ax.imshow(sim_mat, vmin=0, vmax=1, cmap="RdYlGn", aspect="auto")
+    ax.set_xticks(range(n)); ax.set_xticklabels(codes, rotation=45, ha="right", fontsize=9)
+    ax.set_yticks(range(n)); ax.set_yticklabels(codes, fontsize=9)
+    ax.set_title(f"{speaker_label} — Magnetic Laplacian similarity  (q={q})\n"
+                 f"(directed topology: higher = more similar directed flow)",
+                 fontsize=10)
+    fig.colorbar(im, ax=ax, fraction=0.04, pad=0.02).set_label("Similarity", fontsize=8)
+    for i in range(n):
+        for j in range(n):
+            v = sim_mat[i, j]
+            if i != j:
+                ax.text(j, i, f"{v:.2f}", ha="center", va="center",
+                        fontsize=8, color="black" if v > 0.35 else "white")
+    plt.tight_layout()
+    if save:
+        p = os.path.join(sim_dir, "magnetic_similarity.png")
+        plt.savefig(p, bbox_inches="tight", dpi=150);  print(f"  Saved: {p}")
+    if show:
+        plt.show()
+    plt.close()
+
+    # ── dendrogram ────────────────────────────────────────────────────────────
+    if n >= 3:
+        from scipy.cluster.hierarchy import linkage, dendrogram as scipy_dendrogram
+        from scipy.spatial.distance  import squareform
+        condensed = squareform(dist_mat, checks=False)
+        Z = linkage(condensed, method="average")
+        fig, ax = plt.subplots(figsize=(max(6, n * 0.9), 4))
+        scipy_dendrogram(Z, labels=codes, ax=ax, leaf_rotation=45,
+                         color_threshold=0.6 * dist_mat.max())
+        ax.set_title(f"{speaker_label} — Magnetic Laplacian clustering  (q={q})",
+                     fontsize=10)
+        ax.set_ylabel("L2 distance between magnetic heat traces")
+        ax.grid(True, axis="y", color="lightgrey", linewidth=0.5)
+        plt.tight_layout()
+        if save:
+            p = os.path.join(sim_dir, "magnetic_dendrogram.png")
+            plt.savefig(p, bbox_inches="tight", dpi=150);  print(f"  Saved: {p}")
+        if show:
+            plt.show()
+        plt.close()
+
+    print(f"\n  Magnetic similarity summary ({speaker_label}, q={q}):")
+    pairs = [(codes[i], codes[j], sim_mat[i, j], dist_mat[i, j])
+             for i in range(n) for j in range(i + 1, n)]
+    pairs.sort(key=lambda x: x[2], reverse=True)
+    print("  Most similar pairs (directed topology):")
+    for a, b, s, d in pairs[:3]:
+        print(f"    {a} <-> {b}  sim={s:.3f}  (L2 dist={d:.3f})")
+    print("  Least similar pairs (directed topology):")
+    for a, b, s, d in pairs[-3:]:
+        print(f"    {a} <-> {b}  sim={s:.3f}  (L2 dist={d:.3f})")
+
+    return df_sim
+
+
+# ── graph similarity: Method 4 — Hashimoto (non-backtracking) operator ────────
+
+def _hashimoto_heat_trace(
+    G: nx.DiGraph,
+    time_points: np.ndarray,
+) -> np.ndarray:
+    """
+    Compute the heat trace of the Hashimoto (non-backtracking) operator of G.
+
+    The non-backtracking operator B is defined on the set of *directed edges*
+    of G.  For each directed edge e = (u→v), B maps it to all outgoing edges
+    f = (v→w) where w ≠ u — i.e. walks that don't immediately reverse.
+
+    This has two key properties that make it useful here:
+
+    1.  It is intrinsically directed — B(u→v) and B(v→u) are completely
+        different rows of the matrix, so asymmetric edge weights naturally
+        produce different spectra.  Unlike the magnetic Laplacian, no
+        symmetrisation or phase parameter is needed; directionality is baked
+        in structurally.
+
+    2.  It eliminates backtracking artefacts.  Standard random-walk Laplacians
+        double-count short back-and-forth cycles; the non-backtracking walk
+        is blind to those, so the spectrum better reflects longer-range
+        conversational flow patterns.
+
+    Construction
+    ------------
+    Nodes of B are directed edges of G: each (u, v) with w_uv > 0 becomes
+    a row/column index.  Entry B[(u→v), (v→w)] = w_vw  for w ≠ u, else 0.
+    B is a real (but generally non-symmetric) matrix of size |E| × |E|.
+
+    For the heat trace we use the *real parts* of the eigenvalues of B,
+    which are guaranteed real when B is symmetrised via (B + B^T)/2.
+    The full complex eigendecomposition would be expensive and the imaginary
+    parts carry less structural signal; the real part of the spectrum still
+    differentiates directed graphs that the magnetic Laplacian misses when
+    phase cancellation occurs.
+
+    Heat trace:  h(t) = Σ_i exp(-t · |λ_i|)   (absolute value stabilises
+    negative eigenvalues that arise from directed cycles).
+
+    Normalised by number of edges so graphs of different sizes are comparable.
+
+    Returns a 1-D real array of length len(time_points).
+    """
+    nodes  = sorted(G.nodes())
+    # Collect directed edges with positive weight
+    edges  = [(u, v, G[u][v]["weight"]) for u, v in G.edges()
+              if G[u][v]["weight"] > 0]
+    m      = len(edges)
+
+    if m == 0:
+        return np.zeros(len(time_points))
+
+    # Index edges
+    edge_idx = {(u, v): i for i, (u, v, _) in enumerate(edges)}
+
+    # Build B as a dense matrix (fine for the graph sizes we have here;
+    # for very large raw-granularity graphs this could be made sparse)
+    B = np.zeros((m, m))
+    for i, (u, v, _) in enumerate(edges):
+        for w in G.successors(v):
+            if w == u:
+                continue                    # no backtracking
+            if (v, w) in edge_idx:
+                j = edge_idx[(v, w)]
+                B[i, j] = G[v][w]["weight"]
+
+    # Symmetrise to get real eigenvalues cheaply
+    B_sym = (B + B.T) / 2.0
+    eigenvalues = np.linalg.eigvalsh(B_sym)
+
+    # Heat trace using |λ| for stability
+    heat_trace = np.exp(-np.outer(np.abs(eigenvalues), time_points)).sum(axis=0)
+    return heat_trace
+
+
+def compute_hashimoto_similarity(
+    code_graphs: dict[str, nx.DiGraph],
+    speaker_label: str,
+    outdir: str,
+    n_time_points: int = 250,
+    save: bool = True,
+    show: bool = False,
+) -> pd.DataFrame:
+    """
+    Compute pairwise Hashimoto (non-backtracking) spectral distance between
+    per-code transition graphs.
+
+    Compared to the other three methods:
+
+    JS divergence      — edge weight distribution (no topology, no direction)
+    NetLSD             — undirected topology (loses direction entirely)
+    Magnetic Laplacian — directed topology via phase encoding (needs q tuning)
+    Hashimoto          — directed topology via non-backtracking walks
+                         (no free parameters; structurally captures direction)
+
+    The Hashimoto operator is defined on *edges* rather than nodes, so its
+    matrix size is |E|×|E|.  For typical per-code transition graphs with
+    ≤50 edges this is fast.  For large raw-granularity graphs with many
+    edges, runtime increases quadratically — prefer groups granularity.
+
+    Outputs
+    -------
+    {speaker}/similarity/hashimoto_distance.csv
+    {speaker}/similarity/hashimoto_similarity.png
+    {speaker}/similarity/hashimoto_dendrogram.png
+    {speaker}/similarity/hashimoto_heat_traces.png
+
+    Returns a DataFrame of pairwise similarities (1 / (1 + distance)).
+    """
+    sim_dir = _subdir(outdir, speaker_label, "similarity")
+    codes   = sorted(code_graphs.keys())
+    n       = len(codes)
+
+    if n < 2:
+        print(f"  [Hashimoto] Need ≥2 codes, got {n}. Skipping.")
+        return pd.DataFrame()
+
+    time_points = np.logspace(-2, 1, n_time_points)
+
+    traces: dict[str, np.ndarray] = {}
+    for code in codes:
+        ht     = _hashimoto_heat_trace(code_graphs[code], time_points)
+        n_edges = max(code_graphs[code].number_of_edges(), 1)
+        traces[code] = ht / n_edges   # normalise by edge count (operator lives on edges)
+
+    # ── heat trace plot ───────────────────────────────────────────────────────
+    fig, ax = plt.subplots(figsize=(9, 4))
+    for code in codes:
+        ax.plot(time_points, traces[code], label=str(code), linewidth=1.5)
+    ax.set_xscale("log")
+    ax.set_xlabel("Diffusion time  t  (log scale)")
+    ax.set_ylabel("Normalised Hashimoto heat trace  h(t) / |E|")
+    ax.set_title(f"{speaker_label} — Hashimoto (non-backtracking) heat traces\n"
+                 f"(directed; no backtracking artefacts; overlap = similar flow)",
+                 fontsize=10)
+    ax.legend(fontsize=8, bbox_to_anchor=(1.01, 1), loc="upper left")
+    ax.grid(True, color="lightgrey", linewidth=0.5)
+    plt.tight_layout()
+    if save:
+        p = os.path.join(sim_dir, "hashimoto_heat_traces.png")
+        plt.savefig(p, bbox_inches="tight", dpi=150);  print(f"  Saved: {p}")
+    if show:
+        plt.show()
+    plt.close()
+
+    # Pairwise L2 distance
+    dist_mat = np.zeros((n, n))
+    for i in range(n):
+        for j in range(i + 1, n):
+            d = float(np.linalg.norm(traces[codes[i]] - traces[codes[j]]))
+            dist_mat[i, j] = d
+            dist_mat[j, i] = d
+
+    sim_mat = 1.0 / (1.0 + dist_mat)
+    df_dist = pd.DataFrame(dist_mat, index=codes, columns=codes)
+    df_sim  = pd.DataFrame(sim_mat,  index=codes, columns=codes)
+
+    if save:
+        p = os.path.join(sim_dir, "hashimoto_distance.csv")
+        df_dist.to_csv(p, float_format="%.4f")
+        print(f"  Saved: {p}")
+
+    # ── heatmap ───────────────────────────────────────────────────────────────
+    fig, ax = plt.subplots(figsize=(max(5, n * 0.7 + 1.5), max(4, n * 0.7)))
+    im = ax.imshow(sim_mat, vmin=0, vmax=1, cmap="RdYlGn", aspect="auto")
+    ax.set_xticks(range(n)); ax.set_xticklabels(codes, rotation=45, ha="right", fontsize=9)
+    ax.set_yticks(range(n)); ax.set_yticklabels(codes, fontsize=9)
+    ax.set_title(f"{speaker_label} — Hashimoto similarity\n"
+                 f"(non-backtracking directed topology; higher = more similar)",
+                 fontsize=10)
+    fig.colorbar(im, ax=ax, fraction=0.04, pad=0.02).set_label("Similarity", fontsize=8)
+    for i in range(n):
+        for j in range(n):
+            v = sim_mat[i, j]
+            if i != j:
+                ax.text(j, i, f"{v:.2f}", ha="center", va="center",
+                        fontsize=8, color="black" if v > 0.35 else "white")
+    plt.tight_layout()
+    if save:
+        p = os.path.join(sim_dir, "hashimoto_similarity.png")
+        plt.savefig(p, bbox_inches="tight", dpi=150);  print(f"  Saved: {p}")
+    if show:
+        plt.show()
+    plt.close()
+
+    # ── dendrogram ────────────────────────────────────────────────────────────
+    if n >= 3:
+        from scipy.cluster.hierarchy import linkage, dendrogram as scipy_dendrogram
+        from scipy.spatial.distance  import squareform
+        condensed = squareform(dist_mat, checks=False)
+        Z = linkage(condensed, method="average")
+        fig, ax = plt.subplots(figsize=(max(6, n * 0.9), 4))
+        scipy_dendrogram(Z, labels=codes, ax=ax, leaf_rotation=45,
+                         color_threshold=0.6 * dist_mat.max())
+        ax.set_title(f"{speaker_label} — Hashimoto clustering", fontsize=10)
+        ax.set_ylabel("L2 distance between Hashimoto heat traces")
+        ax.grid(True, axis="y", color="lightgrey", linewidth=0.5)
+        plt.tight_layout()
+        if save:
+            p = os.path.join(sim_dir, "hashimoto_dendrogram.png")
+            plt.savefig(p, bbox_inches="tight", dpi=150);  print(f"  Saved: {p}")
+        if show:
+            plt.show()
+        plt.close()
+
+    print(f"\n  Hashimoto similarity summary ({speaker_label}):")
+    pairs = [(codes[i], codes[j], sim_mat[i, j], dist_mat[i, j])
+             for i in range(n) for j in range(i + 1, n)]
+    pairs.sort(key=lambda x: x[2], reverse=True)
+    print("  Most similar pairs (non-backtracking directed topology):")
+    for a, b, s, d in pairs[:3]:
+        print(f"    {a} <-> {b}  sim={s:.3f}  (L2 dist={d:.3f})")
+    print("  Least similar pairs:")
+    for a, b, s, d in pairs[-3:]:
+        print(f"    {a} <-> {b}  sim={s:.3f}  (L2 dist={d:.3f})")
+
+    return df_sim
+
+
 
 def run_similarity_analysis(
     code_graphs: dict[str, nx.DiGraph],
@@ -1211,11 +1817,37 @@ def run_similarity_analysis(
     show: bool = False,
 ):
     """
-    Run both JS divergence and NetLSD similarity on *code_graphs* and write
-    a combined summary CSV to {speaker}/similarity/combined_summary.csv.
+    Run JS divergence, NetLSD, Magnetic Laplacian, and Hashimoto (non-
+    backtracking) similarity on *code_graphs* and write a combined summary CSV.
 
-    The combined summary has one row per code-pair with both scores side by
-    side, making it easy to check whether the two methods agree.
+    What each method captures
+    -------------------------
+    JS divergence      — edge weight distribution overlap.  Similar if the
+                         same transitions appear with similar relative
+                         frequency.  Ignores topology; sensitive to vocab.
+
+    NetLSD             — undirected structural topology via symmetrised
+                         Laplacian eigenspectrum.  Similar if graphs have
+                         similar degree distributions, clustering, path
+                         lengths.  Loses all directional information.
+
+    Magnetic Laplacian — directed topology via complex phase encoding (q=0.25).
+                         Retains direction; can show phase cancellation on
+                         highly symmetric graphs.
+
+    Hashimoto          — directed topology via non-backtracking walks on edges.
+                         No free parameters; naturally directed; eliminates
+                         short back-and-forth cycle artefacts.
+
+    Agreement patterns to look for
+    --------------------------------
+    both_similar                  → same transitions, same directed topology
+    both_different                → genuinely different in every sense
+    same_transitions_diff_direction → JS high, directed methods low
+    diff_transitions_same_topology → JS low, directed methods high
+    directed_methods_disagree     → magnetic and Hashimoto differ by >0.25;
+                                     trust Hashimoto more in this case
+    mixed                         → no clean pattern
     """
     if len(code_graphs) < 2:
         print(f"  [similarity] Need ≥2 code graphs for {speaker_label}, skipping.")
@@ -1225,27 +1857,64 @@ def run_similarity_analysis(
     print(f"  Graph similarity — {speaker_label.upper()}")
     print(f"{'─'*60}")
 
-    df_js     = compute_js_similarity(code_graphs, speaker_label, outdir, save, show)
-    df_netlsd = compute_netlsd_similarity(code_graphs, speaker_label, outdir,
-                                          save=save, show=show)
+    df_js       = compute_js_similarity(code_graphs, speaker_label, outdir, save, show)
+    df_netlsd   = compute_netlsd_similarity(code_graphs, speaker_label, outdir,
+                                            save=save, show=show)
+    df_magnetic = compute_magnetic_similarity(code_graphs, speaker_label, outdir,
+                                              save=save, show=show)
+    df_hashimoto = compute_hashimoto_similarity(code_graphs, speaker_label, outdir,
+                                                save=save, show=show)
 
-    if df_js.empty or df_netlsd.empty:
+    # Need at least JS and one spectral method to produce a summary
+    if df_js.empty:
         return
 
-    # Combined summary: one row per ordered pair (i < j)
     codes = sorted(code_graphs.keys())
     rows  = []
     for i, ca in enumerate(codes):
         for j, cb in enumerate(codes):
             if j <= i:
                 continue
-            rows.append({
+            row = {
                 "code_A":        ca,
                 "code_B":        cb,
                 "js_similarity": round(float(df_js.loc[ca, cb]), 4),
                 "js_divergence": round(1 - float(df_js.loc[ca, cb]), 4),
-                "netlsd_similarity": round(float(df_netlsd.loc[ca, cb]), 4),
-            })
+            }
+            if not df_netlsd.empty:
+                row["netlsd_similarity"] = round(float(df_netlsd.loc[ca, cb]), 4)
+            if not df_magnetic.empty:
+                row["magnetic_similarity"] = round(float(df_magnetic.loc[ca, cb]), 4)
+            if not df_hashimoto.empty:
+                row["hashimoto_similarity"] = round(float(df_hashimoto.loc[ca, cb]), 4)
+
+            # Agreement flag across all four measures
+            js_s   = row["js_similarity"]
+            mag_s  = row.get("magnetic_similarity")
+            hsh_s  = row.get("hashimoto_similarity")
+            # Use directed methods (magnetic + hashimoto) when both available,
+            # fall back to magnetic alone, then just JS
+            directed_scores = [s for s in [mag_s, hsh_s] if s is not None]
+            dir_mean = float(np.mean(directed_scores)) if directed_scores else None
+
+            if dir_mean is not None:
+                if js_s > 0.7 and dir_mean > 0.7:
+                    row["agreement"] = "both_similar"
+                elif js_s < 0.4 and dir_mean < 0.4:
+                    row["agreement"] = "both_different"
+                elif js_s > 0.6 and dir_mean < 0.5:
+                    row["agreement"] = "same_transitions_diff_direction"
+                elif js_s < 0.5 and dir_mean > 0.6:
+                    row["agreement"] = "diff_transitions_same_topology"
+                elif mag_s is not None and hsh_s is not None and abs(mag_s - hsh_s) > 0.25:
+                    # Magnetic and Hashimoto disagree with each other — phase
+                    # cancellation in magnetic may be masking real differences
+                    row["agreement"] = "directed_methods_disagree"
+                else:
+                    row["agreement"] = "mixed"
+            else:
+                row["agreement"] = "js_only"
+            rows.append(row)
 
     df_summary = pd.DataFrame(rows).sort_values("js_similarity", ascending=False)
 
@@ -1265,6 +1934,118 @@ _NGRAM_NAMES = {1: "unigrams", 2: "bigrams", 3: "trigrams",
                 4: "4-grams",  5: "5-grams"}
 
 
+def plot_run_length_bin_counts(
+    sequences: list[list[str]],
+    granularity: str,
+    title_prefix: str,
+    outdir: str,
+    code_label: str = "all",
+    save: bool = True,
+    show: bool = False,
+):
+    """
+    For each base DA label, count how many contiguous runs fell into each
+    bucket (short / medium / long) and plot a grouped bar chart.
+
+    Only meaningful when bucketed_runs=True — the labels in *sequences* must
+    already carry bucket suffixes (e.g. "statements_medium").  Rows with no
+    suffix (plain labels) are counted under an implicit "short" bucket so the
+    plot still renders gracefully if called with un-bucketed sequences.
+
+    Saved to:  {outdir}/{code_label}_run_length_bins.png
+    """
+    os.makedirs(outdir, exist_ok=True)
+
+    # Count occurrences of each (base, bucket) pair after RLE compression
+    # (each contiguous run = one occurrence of its bucketed label)
+    bin_counts: dict[str, dict[str, int]] = {}   # base -> {short/medium/long -> count}
+    buckets_seen: set[str] = set()
+
+    for seq in sequences:
+        compressed = rle_compress(seq)
+        for label in compressed:
+            base   = _strip_bucket(label)
+            bucket = "short"   # default if no suffix
+            for sfx in ("_short", "_medium", "_long"):
+                if label.endswith(sfx):
+                    bucket = sfx.lstrip("_")
+                    break
+            buckets_seen.add(bucket)
+            bin_counts.setdefault(base, {})
+            bin_counts[base][bucket] = bin_counts[base].get(bucket, 0) + 1
+
+    if not bin_counts:
+        return
+
+    # Order bases by total count descending, buckets in logical order
+    bucket_order = [b for b in ("short", "medium", "long") if b in buckets_seen]
+    bases        = sorted(bin_counts, key=lambda b: sum(bin_counts[b].values()),
+                          reverse=True)
+
+    x     = np.arange(len(bases))
+    n_b   = len(bucket_order)
+    width = 0.8 / max(n_b, 1)
+
+    # Colour each bucket with a shade of the base group's colour
+    bucket_shade = {"short": 0.55, "medium": 0.80, "long": 1.0}
+    bucket_hatch = {"short": "",   "medium": "//",  "long": "xx"}
+
+    fig, ax = plt.subplots(figsize=(max(10, len(bases) * 0.7), 5))
+
+    for bi, bucket in enumerate(bucket_order):
+        counts = [bin_counts[base].get(bucket, 0) for base in bases]
+        colors = []
+        for base in bases:
+            hex_c = node_color(base, granularity)
+            # Darken/lighten by blending with white (lighter) or black (darker)
+            rgb   = mcolors.to_rgb(hex_c)
+            shade = bucket_shade[bucket]
+            blended = tuple(c * shade + (1 - shade) * 0.95 for c in rgb)
+            colors.append(blended)
+
+        offsets = (bi - (n_b - 1) / 2) * width
+        bars = ax.bar(
+            x + offsets, counts, width,
+            label=bucket,
+            color=colors,
+            hatch=bucket_hatch[bucket],
+            edgecolor="white",
+            alpha=0.9,
+        )
+        for bar, cnt in zip(bars, counts):
+            if cnt > 0:
+                ax.text(
+                    bar.get_x() + bar.get_width() / 2,
+                    bar.get_height() + ax.get_ylim()[1] * 0.005,
+                    str(cnt),
+                    ha="center", va="bottom", fontsize=7, rotation=45,
+                )
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(
+        [abbrev(b, granularity) for b in bases],
+        rotation=45, ha="right", fontsize=9,
+    )
+    ax.set_ylabel("Number of contiguous runs")
+    ax.set_title(
+        f"{title_prefix}  |  {code_label}  —  run-length bin counts per DA\n"
+        f"(after RLE compression; each bar = one contiguous run)",
+        fontsize=10,
+    )
+    ax.legend(title="Bin", fontsize=9)
+    ax.grid(True, axis="y", color="lightgrey", linewidth=0.5)
+
+    plt.tight_layout()
+    if save:
+        safe = code_label.replace("/", "-").replace(" ", "_")
+        fpath = os.path.join(outdir, f"{safe}_run_length_bins.png")
+        plt.savefig(fpath, bbox_inches="tight", dpi=150)
+        print(f"  Saved: {fpath}")
+    if show:
+        plt.show()
+    plt.close()
+
+
 def _run_partition(
     sequences: list[list[str]],
     partition_label: str,
@@ -1275,20 +2056,29 @@ def _run_partition(
     outdir: str,
     min_edge_weight: int,
     graph_order: int,
+    bucketed_runs: bool,
     save: bool,
     show: bool,
 ) -> dict[str, nx.DiGraph]:
     """
-    Shared plotting pipeline for one partition (patient-important,
-    therapist-important, or non-important).
+    Shared plotting pipeline for one partition.
 
-    *sequences*  — all block sequences pooled (used for the "all" graph)
-    *code_map*   — per-code sequences for code-level breakdown; pass None
-                   for non-important (no code dimension)
-
-    Returns {code: DiGraph} (empty dict for non-important).
+    bucketed_runs controls whether sequences already contain bucketed labels
+    (e.g. "ST_medium").  When True, node_run_lengths is NOT passed to
+    plot_transition_graph — the bucket suffix already encodes length in the
+    node label itself (Option B).  When False, node_run_lengths IS computed
+    and passed so node size encodes mean run length visually (Option D).
+    Both options are therefore automatically active based on this single flag.
     """
     graphs_dir = _subdir(outdir, partition_label, "graphs")
+
+    # Option D: compute mean run lengths from raw sequences for node sizing.
+    # Only used when bucketed_runs=False (when True, the bucket suffix in the
+    # node label already communicates run length, so sizing would be redundant).
+    node_run_lengths = (
+        None if bucketed_runs
+        else compute_node_mean_run_lengths(sequences)
+    )
 
     # ── transition graph: overall ─────────────────────────────────────────────
     plot_transition_graph(
@@ -1298,6 +2088,7 @@ def _run_partition(
         fname="transition_graph_all.png",
         graph_order=graph_order,
         min_edge_weight=min_edge_weight,
+        node_run_lengths=node_run_lengths,
         save=save, show=show,
     )
 
@@ -1306,6 +2097,10 @@ def _run_partition(
     if code_map:
         for code, seqs in code_map.items():
             safe_code = str(code).replace("/", "-").replace(" ", "_")
+            code_rl = (
+                None if bucketed_runs
+                else compute_node_mean_run_lengths(seqs)
+            )
             G = plot_transition_graph(
                 seqs, granularity,
                 title=f"{partition_label} — code: {code} — DA transitions [{granularity}]",
@@ -1313,10 +2108,31 @@ def _run_partition(
                 fname=f"transition_graph_code_{safe_code}.png",
                 graph_order=graph_order,
                 min_edge_weight=min_edge_weight,
+                node_run_lengths=code_rl,
                 save=save, show=show,
             )
             if G is not None:
                 code_graphs[str(code)] = G
+
+    # ── n-gram analyses ────────────────────────────────────────────────────────
+    # ── run-length bin counts (only when bucketed_runs is active) ─────────────
+    if bucketed_runs:
+        plot_run_length_bin_counts(
+            sequences, granularity,
+            title_prefix=partition_label,
+            outdir=graphs_dir,
+            code_label="all",
+            save=save, show=show,
+        )
+        if code_map:
+            for code, seqs in code_map.items():
+                plot_run_length_bin_counts(
+                    seqs, granularity,
+                    title_prefix=partition_label,
+                    outdir=graphs_dir,
+                    code_label=str(code),
+                    save=save, show=show,
+                )
 
     # ── n-gram analyses ────────────────────────────────────────────────────────
     for ngram_size in ngram_sizes:
@@ -1375,6 +2191,7 @@ def run_analysis(
     outdir: str,
     include_context_in_block: bool = False,
     graph_order: int = 1,
+    bucketed_runs: bool = False,
     min_edge_weight: int = 2,
     save: bool = True,
     show: bool = False,
@@ -1409,6 +2226,7 @@ def run_analysis(
                 granularity=granularity,
                 context_window=context_window,
                 include_context_in_block=include_context_in_block,
+                bucketed_runs=bucketed_runs,
             )
         )
 
@@ -1449,6 +2267,7 @@ def run_analysis(
         outdir=outdir,
         min_edge_weight=min_edge_weight,
         graph_order=graph_order,
+        bucketed_runs=bucketed_runs,
         save=save,
         show=show,
     )
@@ -1489,6 +2308,7 @@ def run_nonimportant_analysis(
     outdir: str,
     include_context_in_block: bool = False,
     graph_order: int = 1,
+    bucketed_runs: bool = False,
     min_edge_weight: int = 2,
     save: bool = True,
     show: bool = False,
@@ -1521,6 +2341,7 @@ def run_nonimportant_analysis(
                 granularity=granularity,
                 context_window=context_window,
                 include_context_in_block=include_context_in_block,
+                bucketed_runs=bucketed_runs,
             )
         )
 
@@ -1541,6 +2362,7 @@ def run_nonimportant_analysis(
         outdir=outdir,
         min_edge_weight=min_edge_weight,
         graph_order=graph_order,
+        bucketed_runs=bucketed_runs,
         save=save,
         show=show,
     )
@@ -1581,6 +2403,15 @@ def main():
                              "block into that block's sequences (and exclude them "
                              "from non-important).  Default: context stays in "
                              "non-important pool.")
+    parser.add_argument("--bucketed_runs",   action="store_true",
+                        help="Option B: suffix each DA label with its run-length "
+                             "bucket (_short/_medium/_long) before building graphs "
+                             "and n-grams, so e.g. a long statement run becomes "
+                             "'statements_long'. Thresholds per group are defined in "
+                             "RUN_LENGTH_BUCKETS at the top of the file. "
+                             "When this flag is NOT set, Option D is active instead: "
+                             "node SIZE in the transition graph encodes mean run "
+                             "length visually without changing the node labels.")
     parser.add_argument("--outdir",          default="da_pattern_output/")
     parser.add_argument("--show",            action="store_true")
     args = parser.parse_args()
@@ -1623,6 +2454,7 @@ def main():
             outdir=args.outdir,
             include_context_in_block=args.include_context,
             graph_order=args.graph_order,
+            bucketed_runs=args.bucketed_runs,
             min_edge_weight=args.min_edge_weight,
             save=True,
             show=args.show,
@@ -1638,6 +2470,7 @@ def main():
         outdir=args.outdir,
         include_context_in_block=args.include_context,
         graph_order=args.graph_order,
+        bucketed_runs=args.bucketed_runs,
         min_edge_weight=args.min_edge_weight,
         save=True,
         show=args.show,

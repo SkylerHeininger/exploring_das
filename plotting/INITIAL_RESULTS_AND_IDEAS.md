@@ -36,11 +36,28 @@ This includes the above comparisons, along withs some cross-speaker and cross-im
 
 `get_question_response_patterns.py` looks at the run lengths for responses of each speaker when the patient and therapist ask questions. For example, how does the run length differ when patient asks therapist a question vs therapist asks patient a quesiton. This is done over patient and therapist importance separately, since there seem to be differences in labeling patterns between patient and therapist. Tihs file also looked at the DA's across codes, seeing differing distributions across different codes. This somewhat suggests we may need to group some codes or make a classifier that identifies different codes (harder but may be needed).
 
-`view_common_patterns.py` attempts to find different common patterns in important-labeled turns, compared across codes.
+`view_common_patterns.py` attempts to find different common patterns in important-labeled turns, compared across codes. This has an important function of viewing patterns of DAs across a variety of ngrams and granularities.
+- ngram: the number of items to view at once: If this is 2, each node in the graph is one DA, so an edge signifies connecting the two. If this is 2 or higher, a connection between two DAs will be represented within the node itself, and connections between nodes signify a 3 or higher connection. 
+    - Ex: DAs: Q to S to A to S to ... (rest of conversation)
+1gram: Each node contains 1 DA: Q -> S -> A -> S -> ...
+2gram: Each node contains 2 DAs: (Q,S) -> (S,A) -> (A,S) -> (S,...)
+3gram: Each node contains 3 DAs: (Q,S,A) -> (A,S,...)
+
+And so on. This begs the question of: What is the best ngram to use for our case? This is also accompanied by the issue 
+of granularity. Currently, we have two granularities: Raw DA classes, and groups of classes. For the latter, we previously used statements, canonical and non-canonical questions and answers, hedging, and backchannels. This was helpful for initially viewing the data, but to maximize transitions between different classes, we group all questions and answers together, and group other classes together too, so all are
+
+Currently running thsi script using this:
+`python .\common_patterns.py --dir ..\..\AC_output_csvs\ --graph_order 3 --min_edge_weight 3`
+
+This also seems to benefit from getting the run length: use --bucketed runs, which modifies nodes to be either short, medium, long. This needs to be looked at more to see what best quantifies a short medium or long run.
+
+Notes from graph-based methods:
+- Using ngrams with higher than 2 graph order seems to make overly specific sequences, giving very few nodes and edges within the graph. 
+- The binning seems to be a good choice, giving different weights/nodes to different lengths of DAs. This is especially important for the statements, as these have large run lengths, especially in certain codes.
+- Switching to a uni-directed graph may be more clear for this - if things go back and forth, like QSAS, this leads to not going back and forth in the graph.
 
 ### Next steps
 
-- Look for more common patterns - directly for question followed by statements, question statement question statement, etc, across codes.
 - Check across therapists, to see how different different therapists communicate
 - Check the train test split and see how this differs
 
