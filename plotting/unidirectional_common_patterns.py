@@ -879,6 +879,273 @@ def run_similarity_analysis(
     print(df_summary.to_string(index=False))
 
 
+def plot_codes_vs_nonimportant_dendrogram(
+    code_graphs: dict[str, nx.DiGraph],
+    nonimportant_graph: nx.DiGraph,
+    speaker_label: str,
+    outdir: str,
+    n_time_points: int = 250,
+    save: bool = True,
+    show: bool = False,
+):
+    """
+    Compute Hashimoto distances between every per-code graph and the
+    non-important graph, then draw a single dendrogram showing how all
+    codes cluster relative to each other and to non-important.
+
+    Saved to:
+      {outdir}/{speaker}/similarity/codes_vs_nonimportant_dendrogram.png
+      {outdir}/{speaker}/similarity/codes_vs_nonimportant_distances.csv
+
+    Non-important appears as a leaf labelled "non_important" so its position
+    in the tree shows which codes are most similar to baseline conversation.
+    """
+    if not code_graphs:
+        print(f"  [codes_vs_nonimportant] No code graphs for {speaker_label}, skipping.")
+        return
+
+    sim_dir = _subdir(outdir, speaker_label, "similarity")
+
+    # Build the combined graph dict: all per-code graphs + non_important
+    all_graphs: dict[str, nx.DiGraph] = {**code_graphs, "non_important": nonimportant_graph}
+    labels     = sorted(all_graphs.keys())
+    n          = len(labels)
+
+    if n < 3:
+        print(f"  [codes_vs_nonimportant] Need ≥3 entries for a dendrogram, got {n}.")
+        return
+
+    time_points = np.logspace(-2, 1, n_time_points)
+
+    # Compute normalised Hashimoto heat traces for each graph
+    traces: dict[str, np.ndarray] = {}
+    for lbl, G in all_graphs.items():
+        ht = _hashimoto_heat_trace(G, time_points)
+        traces[lbl] = ht / max(G.number_of_edges(), 1)
+
+    dist_mat = _pairwise_l2(labels, traces)
+    df_dist  = pd.DataFrame(dist_mat, index=labels, columns=labels)
+
+    if save:
+        p = os.path.join(sim_dir, "codes_vs_nonimportant_distances.csv")
+        df_dist.to_csv(p, float_format="%.4f")
+        print(f"  Saved: {p}")
+
+    # ── dendrogram ────────────────────────────────────────────────────────────
+    condensed = squareform(dist_mat, checks=False)
+    Z         = linkage(condensed, method="average")
+
+    # Colour non_important leaf distinctly so it stands out
+    def _leaf_color(label: str) -> str:
+        return "#e05c3a" if label == "non_important" else "#4477aa"
+
+    fig, ax = plt.subplots(figsize=(max(7, n * 0.9 + 1), 5))
+
+    ddata = scipy_dendrogram(
+        Z,
+        labels=labels,
+        ax=ax,
+        leaf_rotation=45,
+        color_threshold=0.0,   # all links same colour — we colour leaves manually
+        above_threshold_color="dimgray",
+        link_color_func=lambda _: "dimgray",
+    )
+
+    # Colour the x-tick labels: non_important in orange, codes in blue
+    for tick_label in ax.get_xticklabels():
+        tick_label.set_color(_leaf_color(tick_label.get_text()))
+        tick_label.set_fontweight(
+            "bold" if tick_label.get_text() == "non_important" else "normal"
+        )
+
+    ax.set_title(
+        f"{speaker_label} — per-code vs non-important\n"
+        f"(Hashimoto spectral distance; orange = non-important baseline)",
+        fontsize=10,
+    )
+    ax.set_ylabel("Hashimoto L2 distance")
+    ax.grid(True, axis="y", color="lightgrey", linewidth=0.5)
+
+    # Add a small legend explaining the colours
+    from matplotlib.lines import Line2D
+    legend_handles = [
+        Line2D([0], [0], color="#4477aa", linewidth=4, label="code"),
+        Line2D([0], [0], color="#e05c3a", linewidth=4, label="non_important"),
+    ]
+    ax.legend(handles=legend_handles, fontsize=9, loc="upper right")
+
+    plt.tight_layout()
+    if save:
+        p = os.path.join(sim_dir, "codes_vs_nonimportant_dendrogram.png")
+        plt.savefig(p, bbox_inches="tight", dpi=150)
+        print(f"  Saved: {p}")
+    if show:
+        plt.show()
+    plt.close()
+
+    # Print where non_important sits relative to codes
+    ni_idx = labels.index("non_important")
+    dists_to_ni = [
+        (labels[i], dist_mat[i, ni_idx])
+        for i in range(n) if i != ni_idx
+    ]
+    dists_to_ni.sort(key=lambda x: x[1])
+    print(f"\n  Codes closest to non_important ({speaker_label}):")
+    for code, d in dists_to_ni[:3]:
+        print(f"    {code}  dist={d:.3f}")
+    print(f"  Codes furthest from non_important ({speaker_label}):")
+    for code, d in dists_to_ni[-3:]:
+        print(f"    {code}  dist={d:.3f}")
+
+
+def plot_all_codes_dendrogram(
+    patient_graphs: dict[str, nx.DiGraph],
+    therapist_graphs: dict[str, nx.DiGraph],
+    nonimportant_graph: nx.DiGraph | None,
+    outdir: str,
+    n_time_points: int = 250,
+    save: bool = True,
+    show: bool = False,
+):
+    """
+    Compute Hashimoto distances across all individual per-code graphs from
+    both speakers and non-important, then draw a single dendrogram.
+
+    Node labels on the x-axis are prefixed with their speaker:
+      patient_CODE, therapist_CODE, non_important
+
+    Leaf colours:
+      patient codes   — blue  (#4477aa)
+      therapist codes — green (#2a9d5c)
+      non_important   — orange (#e05c3a)
+
+    Saved to:
+      {outdir}/cross_partition/similarity/all_codes_dendrogram.png
+      {outdir}/cross_partition/similarity/all_codes_distances.csv
+    """
+    sim_dir = _subdir(outdir, "cross_partition", "similarity")
+
+    # Build labelled graph dict with speaker-prefixed keys
+    all_graphs: dict[str, nx.DiGraph] = {}
+    for code, G in patient_graphs.items():
+        all_graphs[f"patient_{code}"] = G
+    for code, G in therapist_graphs.items():
+        all_graphs[f"therapist_{code}"] = G
+    if nonimportant_graph is not None:
+        all_graphs["non_important"] = nonimportant_graph
+
+    labels = sorted(all_graphs.keys())
+    n      = len(labels)
+
+    if n < 3:
+        print(f"  [all_codes_dendrogram] Need ≥3 entries, got {n}. Skipping.")
+        return
+
+    print(f"\n  Building all-codes dendrogram ({n} leaves) …")
+
+    time_points = np.logspace(-2, 1, n_time_points)
+
+    traces: dict[str, np.ndarray] = {}
+    for lbl, G in all_graphs.items():
+        ht = _hashimoto_heat_trace(G, time_points)
+        traces[lbl] = ht / max(G.number_of_edges(), 1)
+
+    dist_mat = _pairwise_l2(labels, traces)
+    df_dist  = pd.DataFrame(dist_mat, index=labels, columns=labels)
+
+    if save:
+        p = os.path.join(sim_dir, "all_codes_distances.csv")
+        df_dist.to_csv(p, float_format="%.4f")
+        print(f"  Saved: {p}")
+
+    # ── colour map for leaf labels ────────────────────────────────────────────
+    _LEAF_COLORS = {
+        "patient":      "#4477aa",
+        "therapist":    "#2a9d5c",
+        "non_important": "#e05c3a",
+    }
+
+    def _leaf_color(lbl: str) -> str:
+        if lbl == "non_important":
+            return _LEAF_COLORS["non_important"]
+        if lbl.startswith("patient_"):
+            return _LEAF_COLORS["patient"]
+        if lbl.startswith("therapist_"):
+            return _LEAF_COLORS["therapist"]
+        return "#888888"
+
+    # ── dendrogram ────────────────────────────────────────────────────────────
+    condensed = squareform(dist_mat, checks=False)
+    Z         = linkage(condensed, method="average")
+
+    # Figure width scales with number of leaves
+    fig_w = max(10, n * 0.65 + 2)
+    fig, ax = plt.subplots(figsize=(fig_w, 5))
+
+    scipy_dendrogram(
+        Z,
+        labels=labels,
+        ax=ax,
+        leaf_rotation=55,
+        color_threshold=0.0,
+        above_threshold_color="dimgray",
+        link_color_func=lambda _: "dimgray",
+    )
+
+    # Colour and style x-tick labels by speaker
+    for tick_label in ax.get_xticklabels():
+        txt = tick_label.get_text()
+        tick_label.set_color(_leaf_color(txt))
+        tick_label.set_fontsize(8)
+        tick_label.set_fontweight(
+            "bold" if txt == "non_important" else "normal"
+        )
+
+    ax.set_title(
+        "All codes — patient, therapist, and non-important\n"
+        "(Hashimoto spectral distance; AVGLINK clustering)",
+        fontsize=11,
+    )
+    ax.set_ylabel("Hashimoto L2 distance")
+    ax.grid(True, axis="y", color="lightgrey", linewidth=0.5)
+
+    # Legend
+    from matplotlib.lines import Line2D
+    legend_handles = [
+        Line2D([0], [0], color=_LEAF_COLORS["patient"],
+               linewidth=4, label="patient codes"),
+        Line2D([0], [0], color=_LEAF_COLORS["therapist"],
+               linewidth=4, label="therapist codes"),
+        Line2D([0], [0], color=_LEAF_COLORS["non_important"],
+               linewidth=4, label="non_important"),
+    ]
+    ax.legend(handles=legend_handles, fontsize=9, loc="upper right")
+
+    plt.tight_layout()
+    if save:
+        p = os.path.join(sim_dir, "all_codes_dendrogram.png")
+        plt.savefig(p, bbox_inches="tight", dpi=150)
+        print(f"  Saved: {p}")
+    if show:
+        plt.show()
+    plt.close()
+
+    # Console summary: codes closest to and furthest from non_important
+    if "non_important" in labels:
+        ni_idx = labels.index("non_important")
+        dists  = [
+            (labels[i], dist_mat[i, ni_idx])
+            for i in range(n) if i != ni_idx
+        ]
+        dists.sort(key=lambda x: x[1])
+        print("\n  All-codes: closest to non_important:")
+        for lbl, d in dists[:3]:
+            print(f"    {lbl}  dist={d:.3f}")
+        print("  All-codes: furthest from non_important:")
+        for lbl, d in dists[-3:]:
+            print(f"    {lbl}  dist={d:.3f}")
+
+
 # ── partition runners ─────────────────────────────────────────────────────────
 
 def run_important_partition(
@@ -1104,7 +1371,11 @@ def main():
     )
 
     # ── within-speaker similarity across codes ────────────────────────────────
-    for speaker_label, code_graphs in all_speaker_graphs.items():
+    # Run therapist first so its combined_summary.csv is available for the
+    # clustered cross-partition analysis below.
+    speaker_order = ["therapist", "patient"]
+    for speaker_label in speaker_order:
+        code_graphs = all_speaker_graphs.get(speaker_label, {})
         run_similarity_analysis(
             code_graphs,
             speaker_label=speaker_label,
@@ -1112,10 +1383,20 @@ def main():
             save=True,
             show=args.show,
         )
+        # Dendrogram showing each code vs the non-important baseline
+        if nonimportant_graph is not None and code_graphs:
+            plot_codes_vs_nonimportant_dendrogram(
+                code_graphs,
+                nonimportant_graph=nonimportant_graph,
+                speaker_label=speaker_label,
+                outdir=args.outdir,
+                save=True,
+                show=args.show,
+            )
 
-    # ── cross-partition similarity ────────────────────────────────────────────
+    # ── cross-partition similarity (original, pooled) ─────────────────────────
     print(f"\n{'='*60}")
-    print(f" Cross-partition similarity")
+    print(f" Cross-partition similarity (pooled)")
     print(f"{'='*60}")
 
     partition_graphs: dict[str, nx.DiGraph] = {}
@@ -1137,6 +1418,99 @@ def main():
     run_similarity_analysis(
         partition_graphs,
         speaker_label="cross_partition",
+        outdir=args.outdir,
+        save=True,
+        show=args.show,
+    )
+
+    # ── cross-partition similarity (clustered) ────────────────────────────────
+    # Codes are split into two clusters based on domain knowledge:
+    #   cluster_a : IAI, BCS, FSU, VLD
+    #   cluster_b : everything else
+    # This split is derived from the therapist Hashimoto similarity (less noisy
+    # than patient) and then applied symmetrically to the patient codes.
+    # The same split is used for both speakers so the comparison is consistent.
+    print(f"\n{'='*60}")
+    print(f" Cross-partition similarity (clustered)")
+    print(f"{'='*60}")
+
+    _cluster_a_codes = {"IAI", "BCS", "FSU", "VLD"}
+
+    # Print the Hashimoto clustering from the therapist summary for reference
+    therapist_sim_csv = os.path.join(
+        args.outdir, "therapist", "similarity", "combined_summary.csv"
+    )
+    if os.path.exists(therapist_sim_csv):
+        df_tsim = pd.read_csv(therapist_sim_csv)
+        if "hashimoto_similarity" in df_tsim.columns:
+            print("\n  Therapist Hashimoto similarity (for reference):")
+            print(df_tsim[["code_A", "code_B", "hashimoto_similarity"]]
+                  .sort_values("hashimoto_similarity", ascending=False)
+                  .to_string(index=False))
+    else:
+        print(f"  (therapist combined_summary.csv not found at {therapist_sim_csv})")
+
+    def _pool_codes(
+        code_graphs: dict[str, nx.DiGraph],
+        code_set: set[str],
+        label: str,
+    ) -> nx.DiGraph | None:
+        """Merge graphs for codes in code_set into one pooled DiGraph."""
+        matched = {c: G for c, G in code_graphs.items() if c in code_set}
+        if not matched:
+            print(f"  [{label}] No matching codes found in {set(code_graphs.keys())}")
+            return None
+        print(f"  [{label}] pooling codes: {sorted(matched.keys())}")
+        G_pool = nx.DiGraph()
+        for G in matched.values():
+            for u, v, d in G.edges(data=True):
+                if G_pool.has_edge(u, v):
+                    G_pool[u][v]["weight"] += d["weight"]
+                else:
+                    G_pool.add_edge(u, v, weight=d["weight"])
+        return G_pool if G_pool.number_of_edges() > 0 else None
+
+    clustered_graphs: dict[str, nx.DiGraph] = {}
+
+    for speaker_label in speaker_order:
+        code_graphs = all_speaker_graphs.get(speaker_label, {})
+        if not code_graphs:
+            continue
+
+        all_codes   = set(code_graphs.keys())
+        cluster_b   = all_codes - _cluster_a_codes
+
+        G_a = _pool_codes(code_graphs, _cluster_a_codes, f"{speaker_label}_cluster_a")
+        G_b = _pool_codes(code_graphs, cluster_b,        f"{speaker_label}_cluster_b")
+
+        if G_a is not None:
+            clustered_graphs[f"{speaker_label}_cluster_a"] = G_a
+        if G_b is not None:
+            clustered_graphs[f"{speaker_label}_cluster_b"] = G_b
+
+    if nonimportant_graph is not None:
+        clustered_graphs["non_important"] = nonimportant_graph
+
+    if len(clustered_graphs) >= 2:
+        run_similarity_analysis(
+            clustered_graphs,
+            speaker_label="cross_partition_clustered",
+            outdir=args.outdir,
+            save=True,
+            show=args.show,
+        )
+    else:
+        print("  Not enough clustered graphs for similarity analysis.")
+
+    # ── all-codes dendrogram: patient + therapist + non-important ─────────────
+    print(f"\n{'='*60}")
+    print(f" All-codes dendrogram (patient + therapist + non-important)")
+    print(f"{'='*60}")
+
+    plot_all_codes_dendrogram(
+        patient_graphs=all_speaker_graphs.get("patient", {}),
+        therapist_graphs=all_speaker_graphs.get("therapist", {}),
+        nonimportant_graph=nonimportant_graph,
         outdir=args.outdir,
         save=True,
         show=args.show,

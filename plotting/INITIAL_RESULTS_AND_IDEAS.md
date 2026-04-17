@@ -56,9 +56,13 @@ Notes from graph-based methods:
 - The binning seems to be a good choice, giving different weights/nodes to different lengths of DAs. This is especially important for the statements, as these have large run lengths, especially in certain codes.
 - Switching to a uni-directed graph may be more clear for this - if things go back and forth, like QSAS, this leads to not going back and forth in the graph.
 
+`python .\unidirectional_common_patterns.py --dir ..\..\AC_output_csvs\ --min_edge_weight 2 --include_context --context_window 5`
+
+The context window of 5 seems to help a bit as a lot of times questions are lost in the therapy windows. The unidirectional approach seems helpful overall.
+
 ### Next steps
 
-- Check across therapists, to see how different different therapists communicate
+- Check across therapists, to see how different different therapists communicate (need to do in terms of frequencies, have graph level differences)
 - Check the train test split and see how this differs
 
 
