@@ -27,12 +27,13 @@ from statsmodels.stats.multitest import multipletests
 from IPython.display import display, HTML
 import tempfile
 import webbrowser
+import re
 
 DA_COLUMN = 'Proc_DA'
 # These variables are for the file-level, not full dataset
 SAVE_GRAPHS = True
 SHOW_GRAPHS = False
-RENDER_TRANSCRIPT = True
+RENDER_TRANSCRIPT = False
 
 # Defined groups of DAs
 DA_GROUPS = {
@@ -679,7 +680,19 @@ def break_down_relationships(groups, target_col, title_prefix, outdir="group_out
     graph_comparison_of_groups_full(grouped_data, col=target_col, outdir=outdir, title_prefix=title_prefix, save=save, show=show, add_nums=True)
     
 
-
+def extract_therapist_id(filename: str) -> str:
+    """
+    Return the single character immediately before '_with' in *filename*.
+    Falls back to 'unknown' if '_with' is not present.
+ 
+    Examples
+    --------
+    'session3_with_patient.csv'  -> '3'
+    'T2_with_client_01.csv'      -> '2'
+    'no_marker_here.csv'         -> 'unknown'
+    """
+    m = re.search(r"(.)_with", filename)
+    return m.group(1) if m else "unknown"
 
 
 if __name__=="__main__":
@@ -866,6 +879,131 @@ Of the questions the patient asked, {len(t_questions[(t_questions["therapist_imp
 The patient asked {len(p_questions)}\n\
 Of the questions the patient asked, {len(p_questions[(p_questions["therapist_important"] == 1) | (p_questions["patient_important"] == 1)])} were important and {len(p_questions[(p_questions["therapist_important"] != 1) & (p_questions["patient_important"] != 1)])} were not important")
     
+    print("\n--- Per-transcript DA frequency comparison ---")
+ 
+    transcript_groups = {
+        filename: df[DA_COLUMN]
+        for filename, df in dfs_at_da_level.items()
+    }
+    
+    # Full distribution across all DA labels
+    graph_comparison_of_groups_full(
+        transcript_groups,
+        col=DA_COLUMN,
+        title_prefix="Transcript Comparison",
+        outdir=args.graph_dir,
+        save=True,
+        show=False,
+        add_nums=False,
+    )
+    
+    # Break down by DA group (canonical_questions, statements, etc.)
+    break_down_relationships(
+        transcript_groups,
+        target_col=DA_COLUMN,
+        title_prefix="Transcript DA Group Comparison",
+        outdir=os.path.join(args.graph_dir, "group_output"),
+        save=True,
+        show=False,
+    )
+    
+    
+    # ── 2. Per-therapist DA frequency comparison ──────────────────────────────────
+    # Files are grouped by the therapist ID extracted from the filename
+    # (the character before '_with').  All transcripts for a given therapist are
+    # pooled into one group so you can compare therapist 1 vs 2 vs 3 etc.
+    
+    print("\n--- Per-therapist DA frequency comparison ---")
+    
+    # Build per-therapist DA series by pooling across their transcripts
+    therapist_da_groups: dict[str, list] = {}
+    for filename, df in dfs_at_da_level.items():
+        tid = extract_therapist_id(filename)
+        key = f"therapist_{tid}"
+        therapist_da_groups.setdefault(key, [])
+        therapist_da_groups[key].append(df[DA_COLUMN])
+    
+    # Concatenate each therapist's transcript DAs into one Series
+    therapist_da_series = {
+        key: pd.concat(series_list, ignore_index=True)
+        for key, series_list in sorted(therapist_da_groups.items())
+    }
+    
+    print(f"  Therapists found: {sorted(therapist_da_series.keys())}")
+    for key, series in therapist_da_series.items():
+        print(f"    {key}: {len(series)} DA rows across "
+            f"{sum(1 for fn in dfs_at_da_level if extract_therapist_id(fn) == key.replace('therapist_', ''))} transcript(s)")
+    
+    # Full distribution
+    graph_comparison_of_groups_full(
+        therapist_da_series,
+        col=DA_COLUMN,
+        title_prefix="Therapist Comparison",
+        outdir=args.graph_dir,
+        save=True,
+        show=False,
+        add_nums=True,
+    )
+    
+    # Break down by DA group
+    break_down_relationships(
+        therapist_da_series,
+        target_col=DA_COLUMN,
+        title_prefix="Therapist DA Group Comparison",
+        outdir=os.path.join(args.graph_dir, "group_output"),
+        save=True,
+        show=False,
+    )
+    
+    # Therapist comparison split by speaker (therapist speech vs patient speech per therapist)
+    print("\n--- Per-therapist DA frequency: therapist speech only ---")
+    
+    therapist_speech_groups = {
+        key: pd.concat(
+            [df.loc[df["speaker"] == "Therapist", DA_COLUMN]
+            for fn, df in dfs_at_da_level.items()
+            if extract_therapist_id(fn) == key.replace("therapist_", "")],
+            ignore_index=True,
+        )
+        for key in sorted(therapist_da_series.keys())
+    }
+    # Drop empty groups
+    therapist_speech_groups = {k: v for k, v in therapist_speech_groups.items() if len(v) > 0}
+    
+    graph_comparison_of_groups_full(
+        therapist_speech_groups,
+        col=DA_COLUMN,
+        title_prefix="Therapist Speech by Therapist ID",
+        outdir=args.graph_dir,
+        save=True,
+        show=False,
+        add_nums=True,
+    )
+    
+    print("\nPer-therapist DA frequency: patient speech only")
+    
+    patient_speech_groups = {
+        key: pd.concat(
+            [df.loc[df["speaker"] == "Patient", DA_COLUMN]
+            for fn, df in dfs_at_da_level.items()
+            if extract_therapist_id(fn) == key.replace("therapist_", "")],
+            ignore_index=True,
+        )
+        for key in sorted(therapist_da_series.keys())
+    }
+    patient_speech_groups = {k: v for k, v in patient_speech_groups.items() if len(v) > 0}
+    
+    graph_comparison_of_groups_full(
+        patient_speech_groups,
+        col=DA_COLUMN,
+        title_prefix="Patient Speech by Therapist ID",
+        outdir=args.graph_dir,
+        save=True,
+        show=False,
+        add_nums=True,
+    )
+
+
     exit()
 
     # Train-test split comparison
