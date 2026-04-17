@@ -75,9 +75,10 @@ This instead looks at differences at the transcript level and between therapists
 
 This uses bag of words approach with ngrams to build dictionaries of common patterns. A "word" in this case would be a sequence of DA groups: statements, answers, etc. This approach also generally agrees with the graph-based approach, although I think the graph based approach may overall be better, as between ngrams there is repitition, and I think describing a code/importance is a better approach using a graph (connectivity, etc), rather than the bag of words. This outputs to `ngram_bow_output` subdir.
 
-### Next steps
+## Next steps
 
-- Try canonical/noncanonical questions and answers in the given experiments, use the frequency data to try and motivate this.
+- Try canonical/noncanonical questions and answers in the given experiments, use the frequency data to try and motivate this. (this actually is using CA/CQ, I think this split should maybe be modified, though)
+- Check agreement between graph and BOW methods. Perhaps Kohen's Kappa - this alone may be paper worthy, but hard to say.
 - Check the train test split and see how this differs
 
 
