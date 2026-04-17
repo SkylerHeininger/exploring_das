@@ -216,4 +216,5 @@ archive/
 da_pattern_output/
 path_graph_output/
 transcript_graph_output/
+ngram_bow_output/
 DA_notes.txt
