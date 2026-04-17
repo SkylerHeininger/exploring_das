@@ -78,7 +78,7 @@ EXTENDED_DA_GROUPS: dict[str, list[str]] = {
     ],
     "backchannel": [
         "Hold-before-answer-agreement", "Acknowledge-Backchannel",
-        "Response-Acknowledgement",
+        "Response-Acknowledgement", "Non-verbal", "Uninterpretable", "Other",
     ],
     "statements": ["Statement-non-opinion", "Statement-opinion"],
     "hedge":      ["Hedge"],
@@ -104,7 +104,7 @@ EXTENDED_DA_GROUPS: dict[str, list[str]] = {
     ],
     # Noise: non-linguistic or unclassifiable rows.
     "noise": [
-        "Non-verbal", "Uninterpretable", "Other", "3rd-party-talk",
+        "3rd-party-talk",
     ],
 }
 
