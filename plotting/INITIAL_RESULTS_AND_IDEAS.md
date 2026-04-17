@@ -65,7 +65,7 @@ The context window of 5 seems to help a bit as a lot of times questions are lost
 
 `python .\ngram_bow.py --dir ..\..\AC_output_csvs\ --min_edge_weight 2 --include_context --context_window 5`
 
-This uses bag of words approach with ngrams to build dictionaries of common patterns. A "word" in this case would be a sequence of DA groups: statements, answers, etc. 
+This uses bag of words approach with ngrams to build dictionaries of common patterns. A "word" in this case would be a sequence of DA groups: statements, answers, etc. This approach also generally agrees with the graph-based approach, although I think the graph based approach may overall be better, as between ngrams there is repitition, and I think describing a code/importance is a better approach using a graph (connectivity, etc), rather than the bag of words.
 
 ### Next steps
 
