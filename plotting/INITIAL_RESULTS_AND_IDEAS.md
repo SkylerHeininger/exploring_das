@@ -34,11 +34,13 @@ Summary: Frequency analysis across DAs in all comparisons, bag of words (BOW) of
 
 This includes the above comparisons, along withs some cross-speaker and cross-importance comparisons. Overall, comparing the DAs between speakers has the most significant / easily explanable features.
 
-`graph_file_da.py` now includes a tool for manually rendering the dialogue acts in conversation, specifically surrounding important turns, making it easier to see what is happening within the conversations.
+`graph_file_da.py` now includes a tool for manually rendering the dialogue acts in conversation, specifically surrounding important turns, making it easier to see what is happening within the conversations. This outputs to `output` subdir.
 
-`get_question_response_patterns.py` looks at the run lengths for responses of each speaker when the patient and therapist ask questions. For example, how does the run length differ when patient asks therapist a question vs therapist asks patient a quesiton. This is done over patient and therapist importance separately, since there seem to be differences in labeling patterns between patient and therapist. Tihs file also looked at the DA's across codes, seeing differing distributions across different codes. This somewhat suggests we may need to group some codes or make a classifier that identifies different codes (harder but may be needed).
+`get_question_response_patterns.py` looks at the run lengths for responses of each speaker when the patient and therapist ask questions. For example, how does the run length differ when patient asks therapist a question vs therapist asks patient a quesiton. This is done over patient and therapist importance separately, since there seem to be differences in labeling patterns between patient and therapist. Tihs file also looked at the DA's across codes, seeing differing distributions across different codes. This somewhat suggests we may need to group some codes or make a classifier that identifies different codes (harder but may be needed). This outputs to `qsh_output` subdir.
 
-`view_common_patterns.py` attempts to find different common patterns in important-labeled turns, compared across codes. This has an important function of viewing patterns of DAs across a variety of ngrams and granularities.
+`view_common_patterns.py` looks at the DAs leading to and following important turns, depending on the code. Outputs to `code_da_output` subdir.
+
+`common_patterns.py` attempts to find different common patterns in important-labeled turns, compared across codes. This has an important function of viewing patterns of DAs across a variety of ngrams and granularities.
 - ngram: the number of items to view at once: If this is 2, each node in the graph is one DA, so an edge signifies connecting the two. If this is 2 or higher, a connection between two DAs will be represented within the node itself, and connections between nodes signify a 3 or higher connection. 
     - Ex: DAs: Q to S to A to S to ... (rest of conversation)
 1gram: Each node contains 1 DA: Q -> S -> A -> S -> ...
@@ -51,21 +53,27 @@ of granularity. Currently, we have two granularities: Raw DA classes, and groups
 Currently running this script using this:
 `python .\common_patterns.py --dir ..\..\AC_output_csvs\ --graph_order 3 --min_edge_weight 3`
 
+This outputs to `da_pattern_outpput` subdir.
+
 This also seems to benefit from getting the run length: use --bucketed runs, which modifies nodes to be either short, medium, long. This needs to be looked at more to see what best quantifies a short medium or long run.
 
 Notes from graph-based methods:
 - Using ngrams with higher than 2 graph order seems to make overly specific sequences, giving very few nodes and edges within the graph. 
 - The binning seems to be a good choice, giving different weights/nodes to different lengths of DAs. This is especially important for the statements, as these have large run lengths, especially in certain codes.
-- Switching to a uni-directed graph may be more clear for this - if things go back and forth, like QSAS, this leads to not going back and forth in the graph.
+- Switching to a uni-directed graph may be more clear for this - if things go back and forth, like QSAS, this leads to not going back and forth in the graph. So, we move onto the unidirectional methods!
 
 `python .\unidirectional_common_patterns.py --dir ..\..\AC_output_csvs\ --min_edge_weight 2 --include_context --context_window 5`
 
-The context window of 5 seems to help a bit as a lot of times questions are lost in the therapy windows. The unidirectional approach seems helpful overall.
+The context window of 5 seems to help a bit as a lot of times questions are lost in the therapy windows. The unidirectional approach seems helpful overall. This outputs to `path_graph_output` subdir. 
+
+`python .\unidirectional_therapist_patterns.py --dir ..\..\AC_output_csvs\ --min_edge_weight 2 --include_context --context_window 5`
+
+This instead looks at differences at the transcript level and between therapists. This outputs to `transcript_graph_output` subdir.
 
 
 `python .\ngram_bow.py --dir ..\..\AC_output_csvs\ --min_edge_weight 2 --include_context --context_window 5`
 
-This uses bag of words approach with ngrams to build dictionaries of common patterns. A "word" in this case would be a sequence of DA groups: statements, answers, etc. This approach also generally agrees with the graph-based approach, although I think the graph based approach may overall be better, as between ngrams there is repitition, and I think describing a code/importance is a better approach using a graph (connectivity, etc), rather than the bag of words.
+This uses bag of words approach with ngrams to build dictionaries of common patterns. A "word" in this case would be a sequence of DA groups: statements, answers, etc. This approach also generally agrees with the graph-based approach, although I think the graph based approach may overall be better, as between ngrams there is repitition, and I think describing a code/importance is a better approach using a graph (connectivity, etc), rather than the bag of words. This outputs to `ngram_bow_output` subdir.
 
 ### Next steps
 

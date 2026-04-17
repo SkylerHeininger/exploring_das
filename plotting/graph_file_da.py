@@ -756,7 +756,7 @@ if __name__=="__main__":
     
     graph_comparison_of_groups_full(speaker_groups, col=DA_COLUMN, title_prefix="Speaker Comparison", save=True, show=False)
 
-    break_down_relationships(speaker_groups, target_col=DA_COLUMN, title_prefix="Speaker Comparison of DA groups", outdir="group_output/", save=True, show=False)
+    break_down_relationships(speaker_groups, target_col=DA_COLUMN, title_prefix="Speaker Comparison of DA groups", outdir=os.path.join(args.graph_dir, "group_output"), save=True, show=False)
 
 
     speaker_groups = {'therapist': combined[combined['speaker'] == 'Therapist'],
@@ -780,15 +780,15 @@ if __name__=="__main__":
     a_t_comparison = {'Important': all_important, 'NonImportant': non_important}
     graph_comparison_of_groups_full(a_t_comparison, col=DA_COLUMN, title_prefix="Important-NonImportant Comparison", show=False, save=True)
 
-    break_down_relationships(a_t_comparison, target_col=DA_COLUMN, title_prefix="Importance Comparison of DA groups", outdir="group_output", show=False, save=True)
+    break_down_relationships(a_t_comparison, target_col=DA_COLUMN, title_prefix="Importance Comparison of DA groups", outdir=os.path.join(args.graph_dir, "group_output"), show=False, save=True)
 
     non_p_important = combined[combined['patient_important'] != 1][DA_COLUMN]
     p_n_comparison = {'important': p_important, 'nonimportant': non_p_important}
-    break_down_relationships(p_n_comparison, target_col=DA_COLUMN, title_prefix="Patient Importance Comparison of DA groups", outdir="group_output", show=True, save=True)
+    break_down_relationships(p_n_comparison, target_col=DA_COLUMN, title_prefix="Patient Importance Comparison of DA groups", outdir=os.path.join(args.graph_dir, "group_output"), show=True, save=True)
     graph_comparison_of_groups_full(p_n_comparison, col=DA_COLUMN, title_prefix="Patient Importance Comparison", show=True, save=True)
     non_t_important = combined[combined['therapist_important'] != 1][DA_COLUMN]
     t_n_comparison = {'important': t_important, 'nonimportant': non_t_important}
-    break_down_relationships(t_n_comparison, target_col=DA_COLUMN, title_prefix="Therapist Importance Comparison of DA groups", outdir="group_output", show=True, save=True)
+    break_down_relationships(t_n_comparison, target_col=DA_COLUMN, title_prefix="Therapist Importance Comparison of DA groups", outdir=os.path.join(args.graph_dir, "group_output"), show=True, save=True)
     graph_comparison_of_groups_full(t_n_comparison, col=DA_COLUMN, title_prefix="Therapist Importance Comparison", show=True, save=True)
 
 
