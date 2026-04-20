@@ -36,7 +36,7 @@ from scipy.stats import chi2_contingency
 from statsmodels.stats.multitest import multipletests
 
 # ── import shared constants ────────────────────────────────────────────────────
-from graph_file_da import DA_COLUMN, DA_GROUPS   # noqa: E402  (project-local)
+from plotting.graph_file_da import DA_COLUMN, DA_GROUPS   # noqa: E402  (project-local)
 
 # ── constants ─────────────────────────────────────────────────────────────────
 CONTEXT_WINDOW = 15          # DAs of context to grab on each side
@@ -270,7 +270,7 @@ def plot_stacked_proportions(
     min_turns: int = 2,
 ):
     """
-    Stacked proportional bar chart — one bar per code, coloured by DA group.
+    Stacked proportional bar chart one bar per code, coloured by DA group.
     Bars with fewer than `min_turns` turns are shown with hatching to indicate
     low support.
     """
@@ -371,7 +371,7 @@ def plot_region_comparison(
     ax.set_xticklabels(group_cols, rotation=30, ha="right", fontsize=9)
     ax.set_ylabel("Proportion")
     ax.set_ylim(0, 1.0)
-    ax.set_title(f"{title_prefix} — code '{code}' pre/core/post DA profile", fontsize=11)
+    ax.set_title(f"{title_prefix} code '{code}' pre/core/post DA profile", fontsize=11)
     ax.legend(fontsize=9)
     ax.grid(True, axis="y", color="lightgrey", linewidth=0.5)
 
@@ -517,7 +517,7 @@ def run_speaker_analysis(
     """
     prefix = f"{speaker_label}"
     print(f"\n{'='*60}")
-    print(f"  {speaker_label.upper()} — important turns via '{importance_col}'")
+    print(f"  {speaker_label.upper()} important turns via '{importance_col}'")
     print(f"{'='*60}")
 
     # 1. Extract windows
@@ -539,7 +539,7 @@ def run_speaker_analysis(
     post_table = build_code_profile_table(windows, region="post")
 
     # Handle zero-context case: if no pre/post rows exist at all, tables will
-    # be populated but every group count will be 0 — that's fine, plots will
+    # be populated but every group count will be 0 that's fine, plots will
     # just show flat zero bars for those regions.
 
     print(f"\n  Codes found: {list(core_table.index)}")
@@ -553,7 +553,7 @@ def run_speaker_analysis(
             continue
         plot_stacked_proportions(
             table,
-            title=f"{prefix} — {region} DA group proportions by code",
+            title=f"{prefix} {region} DA group proportions by code",
             outdir=outdir,
             fname=f"{prefix}_{region}_da_proportions.png",
             save=save,
@@ -579,7 +579,7 @@ def run_speaker_analysis(
     if len(core_table) >= 2:
         plot_heatmap_da_by_code(
             core_table,
-            title=f"{prefix} — core turn DA group z-score heatmap",
+            title=f"{prefix} core turn DA group z-score heatmap",
             outdir=outdir,
             fname=f"{prefix}_core_da_heatmap.png",
             save=save,
@@ -591,7 +591,7 @@ def run_speaker_analysis(
 
     if not chi2_results.empty and "p_corrected" in chi2_results.columns:
         sig = chi2_results[chi2_results.get("significant", False) == True]
-        print(f"\n  Pairwise chi-square (core region) — "
+        print(f"\n  Pairwise chi-square (core region) "
               f"{len(sig)} significant pairs (FDR-corrected p < 0.05):")
         if not sig.empty:
             print(sig[["code_a", "code_b", "chi2", "p_value", "p_corrected"]].to_string(index=False))
@@ -603,7 +603,7 @@ def run_speaker_analysis(
         plot_chi2_significance_matrix(
             chi2_results,
             codes=list(core_table.index),
-            title=f"{prefix} — pairwise chi-square (core) significance",
+            title=f"{prefix} pairwise chi-square (core) significance",
             outdir=outdir,
             fname=f"{prefix}_core_chi2_matrix.png",
             save=save,

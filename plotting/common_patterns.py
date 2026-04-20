@@ -53,7 +53,7 @@ import networkx as nx
 from scipy.stats import chi2_contingency
 from statsmodels.stats.multitest import multipletests
 
-from graph_file_da import DA_COLUMN, DA_GROUPS
+from plotting.graph_file_da import DA_COLUMN, DA_GROUPS
 
 # ── extended DA group definitions ─────────────────────────────────────────────
 

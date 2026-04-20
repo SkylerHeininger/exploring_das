@@ -23,7 +23,7 @@ from statsmodels.stats.multitest import multipletests
 from IPython.display import display, HTML
 import tempfile
 import webbrowser
-from graph_file_da import DA_COLUMN, DA_GROUPS
+from plotting.graph_file_da import DA_COLUMN, DA_GROUPS
 from scipy.stats import mannwhitneyu
 
 

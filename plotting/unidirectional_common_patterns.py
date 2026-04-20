@@ -3,7 +3,7 @@ path_graph_da.py
 
 Builds dual-node directed path graphs from DA sequences, where each DA group
 gets exactly two nodes (DA_a, DA_b).  This avoids the single-node collapse
-problem of standard transition graphs — a sequence ST→Q→ST becomes a genuine
+problem of standard transition graphs a sequence ST→Q→ST becomes a genuine
 3-node path ST_a→Q_a→ST_b rather than a loop ST→Q→ST.
 
 Node assignment rules
@@ -52,7 +52,7 @@ from scipy.cluster.hierarchy import linkage, dendrogram as scipy_dendrogram
 from scipy.spatial.distance import squareform
 
 # ── imports from existing script ─────────────────────────────────────────────
-from common_patterns import (
+from plotting.common_patterns import (
     DA_COLUMN,
     EXTENDED_DA_GROUPS,
     DA_GROUP_ABBREV,
@@ -389,7 +389,7 @@ def extract_important_sequences(
     Returns list of {codes, sequence} dicts.
     Each block is a fresh sequence (resets to _a on graph building).
     Context is optionally prepended/appended to the sequence but NOT
-    visualised separately — it becomes part of the path.
+    visualised separately it becomes part of the path.
     """
     importance = df[importance_col].fillna(0).astype(int)
     labels     = [
@@ -547,7 +547,7 @@ def _sim_heatmap_and_dendrogram(
         fig, ax = plt.subplots(figsize=(max(6, n * 0.9), 4))
         scipy_dendrogram(Z, labels=codes, ax=ax, leaf_rotation=45,
                          color_threshold=0.6 * dist_mat.max())
-        ax.set_title(f"{title} — clustering", fontsize=10)
+        ax.set_title(f"{title} clustering", fontsize=10)
         ax.set_ylabel(ylabel)
         ax.grid(True, axis="y", color="lightgrey", linewidth=0.5)
         plt.tight_layout()
@@ -593,7 +593,7 @@ def compute_js_similarity(
 
     _sim_heatmap_and_dendrogram(
         dist_mat, codes, sim_mat,
-        title=f"{speaker_label} — JS transition similarity",
+        title=f"{speaker_label} JS transition similarity",
         sim_dir=sim_dir, fname_prefix="js",
         ylabel="JS divergence",
         save=save, show=show,
@@ -624,7 +624,7 @@ def compute_netlsd_similarity(
         for c in codes
     }
 
-    _plot_heat_traces(traces, time_points, f"{speaker_label} — NetLSD heat traces",
+    _plot_heat_traces(traces, time_points, f"{speaker_label} NetLSD heat traces",
                       "Normalised heat trace  h(t) / n",
                       os.path.join(sim_dir, "netlsd_heat_traces.png"), save, show)
 
@@ -637,7 +637,7 @@ def compute_netlsd_similarity(
 
     _sim_heatmap_and_dendrogram(
         dist_mat, codes, sim_mat,
-        title=f"{speaker_label} — NetLSD structural similarity",
+        title=f"{speaker_label} NetLSD structural similarity",
         sim_dir=sim_dir, fname_prefix="netlsd",
         ylabel="L2 distance",
         save=save, show=show,
@@ -670,7 +670,7 @@ def compute_magnetic_similarity(
     }
 
     _plot_heat_traces(traces, time_points,
-                      f"{speaker_label} — Magnetic Laplacian heat traces (q={q})",
+                      f"{speaker_label} Magnetic Laplacian heat traces (q={q})",
                       "Normalised magnetic heat trace  h(t) / n",
                       os.path.join(sim_dir, "magnetic_heat_traces.png"), save, show)
 
@@ -683,7 +683,7 @@ def compute_magnetic_similarity(
 
     _sim_heatmap_and_dendrogram(
         dist_mat, codes, sim_mat,
-        title=f"{speaker_label} — Magnetic Laplacian similarity (q={q})",
+        title=f"{speaker_label} Magnetic Laplacian similarity (q={q})",
         sim_dir=sim_dir, fname_prefix="magnetic",
         ylabel="L2 distance",
         save=save, show=show,
@@ -715,7 +715,7 @@ def compute_hashimoto_similarity(
     }
 
     _plot_heat_traces(traces, time_points,
-                      f"{speaker_label} — Hashimoto heat traces",
+                      f"{speaker_label} Hashimoto heat traces",
                       "Normalised Hashimoto heat trace  h(t) / |E|",
                       os.path.join(sim_dir, "hashimoto_heat_traces.png"), save, show)
 
@@ -728,7 +728,7 @@ def compute_hashimoto_similarity(
 
     _sim_heatmap_and_dendrogram(
         dist_mat, codes, sim_mat,
-        title=f"{speaker_label} — Hashimoto similarity",
+        title=f"{speaker_label} Hashimoto similarity",
         sim_dir=sim_dir, fname_prefix="hashimoto",
         ylabel="L2 distance",
         save=save, show=show,
@@ -812,7 +812,7 @@ def run_similarity_analysis(
         return
 
     print(f"\n{'─'*60}")
-    print(f"  Graph similarity — {speaker_label.upper()}")
+    print(f"  Graph similarity {speaker_label.upper()}")
     print(f"{'─'*60}")
 
     df_js       = compute_js_similarity(code_graphs, speaker_label, outdir, save, show)
@@ -946,7 +946,7 @@ def plot_codes_vs_nonimportant_dendrogram(
         labels=labels,
         ax=ax,
         leaf_rotation=45,
-        color_threshold=0.0,   # all links same colour — we colour leaves manually
+        color_threshold=0.0,   # all links same colour we colour leaves manually
         above_threshold_color="dimgray",
         link_color_func=lambda _: "dimgray",
     )
@@ -959,7 +959,7 @@ def plot_codes_vs_nonimportant_dendrogram(
         )
 
     ax.set_title(
-        f"{speaker_label} — per-code vs non-important\n"
+        f"{speaker_label} per-code vs non-important\n"
         f"(Hashimoto spectral distance; orange = non-important baseline)",
         fontsize=10,
     )
@@ -1015,9 +1015,9 @@ def plot_all_codes_dendrogram(
       patient_CODE, therapist_CODE, non_important
 
     Leaf colours:
-      patient codes   — blue  (#4477aa)
-      therapist codes — green (#2a9d5c)
-      non_important   — orange (#e05c3a)
+      patient codes   blue  (#4477aa)
+      therapist codes green (#2a9d5c)
+      non_important   orange (#e05c3a)
 
     Saved to:
       {outdir}/cross_partition/similarity/all_codes_dendrogram.png
@@ -1102,7 +1102,7 @@ def plot_all_codes_dendrogram(
         )
 
     ax.set_title(
-        "All codes — patient, therapist, and non-important\n"
+        "All codes patient, therapist, and non-important\n"
         "(Hashimoto spectral distance; AVGLINK clustering)",
         fontsize=11,
     )
@@ -1214,7 +1214,7 @@ def run_important_partition(
     # Overall graph (all codes pooled)
     plot_path_graph(
         all_sequences, granularity,
-        title=f"{speaker_label} — all codes — dual-node path graph [{granularity}]",
+        title=f"{speaker_label} all codes dual-node path graph [{granularity}]",
         outdir=graphs_dir,
         fname="path_graph_all.png",
         min_edge_weight=min_edge_weight,
@@ -1229,7 +1229,7 @@ def run_important_partition(
         safe_code = str(code).replace("/", "-").replace(" ", "_")
         G = plot_path_graph(
             seqs, granularity,
-            title=f"{speaker_label} — code: {code} — dual-node path graph [{granularity}]",
+            title=f"{speaker_label} code: {code} dual-node path graph [{granularity}]",
             outdir=graphs_dir,
             fname=f"path_graph_code_{safe_code}.png",
             min_edge_weight=min_edge_weight,
@@ -1287,7 +1287,7 @@ def run_nonimportant_partition(
 
     G = plot_path_graph(
         all_sequences, granularity,
-        title=f"non_important — dual-node path graph [{granularity}]",
+        title=f"non_important dual-node path graph [{granularity}]",
         outdir=graphs_dir,
         fname="path_graph_all.png",
         min_edge_weight=min_edge_weight,

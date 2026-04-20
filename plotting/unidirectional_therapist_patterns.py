@@ -68,7 +68,7 @@ from scipy.cluster.hierarchy import linkage, dendrogram as scipy_dendrogram
 from scipy.spatial.distance import squareform
 
 # ── shared imports ────────────────────────────────────────────────────────────
-from common_patterns import (
+from plotting.common_patterns import (
     DA_COLUMN,
     DA_GROUP_ABBREV,
     DA_GROUP_COLORS,

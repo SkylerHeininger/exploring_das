@@ -2,7 +2,7 @@
 ngram_bow_da.py
 
 N-gram bag-of-words analysis of dialogue act sequences, comparing across:
-  1. Importance levels  — patient_important, therapist_important, non_important
+  1. Importance levels  patient_important, therapist_important, non_important
   2. Individual transcripts
   3. Therapists (transcripts pooled by therapist ID from filename)
 
@@ -29,9 +29,9 @@ Outputs go into subdirectories of --outdir/ngram_bow/:
 
 Granularity
 -----------
---granularity groups  (default) — DA group labels after mapping through
+--granularity groups  (default) DA group labels after mapping through
                                    EXTENDED_DA_GROUPS from common_patterns.py
---granularity raw     — original DA class strings as-is
+--granularity raw     original DA class strings as-is
 
 Usage
 -----
@@ -62,7 +62,7 @@ from scipy.stats import chi2_contingency
 from statsmodels.stats.multitest import multipletests
 
 # ── shared imports ────────────────────────────────────────────────────────────
-from common_patterns import (
+from plotting.common_patterns import (
     DA_COLUMN,
     EXTENDED_DA_GROUPS,
     DA_GROUP_ABBREV,
@@ -346,31 +346,31 @@ def build_difference_summary(
     For every n-gram and every n-gram size the summary includes:
 
     Identification
-      ngram           — n-gram string  e.g. "ST-CQ-ST"
-      ngram_size      — 2, 3, 4, or 5
+      ngram           n-gram string  e.g. "ST-CQ-ST"
+      ngram_size      2, 3, 4, or 5
 
     Frequency per group  (one column each, normalised)
-      freq_{group}    — normalised frequency within that group
+      freq_{group}    normalised frequency within that group
 
     Raw counts per group
-      count_{group}   — raw occurrence count
+      count_{group}   raw occurrence count
 
     Pairwise frequency differences  (all ordered pairs A vs B)
-      diff_{A}_vs_{B} — freq_A - freq_B  (positive = more common in A)
-      absdiff_{A}_vs_{B} — |freq_A - freq_B|
+      diff_{A}_vs_{B} freq_A - freq_B  (positive = more common in A)
+      absdiff_{A}_vs_{B} |freq_A - freq_B|
 
     Dispersion across groups
-      freq_max        — highest frequency across all groups
-      freq_min        — lowest frequency across all groups
-      freq_range      — freq_max - freq_min
-      freq_std        — standard deviation of frequencies across groups
-      dominant_group  — group with the highest frequency for this n-gram
+      freq_max        highest frequency across all groups
+      freq_min        lowest frequency across all groups
+      freq_range      freq_max - freq_min
+      freq_std        standard deviation of frequencies across groups
+      dominant_group  group with the highest frequency for this n-gram
 
     Statistical significance
-      chi2            — chi-squared statistic (NaN if not tested)
-      p_raw           — raw p-value
-      p_fdr           — FDR-corrected p-value
-      significant     — True if p_fdr < 0.05
+      chi2            chi-squared statistic (NaN if not tested)
+      p_raw           raw p-value
+      p_fdr           FDR-corrected p-value
+      significant     True if p_fdr < 0.05
 
     Rows are sorted by freq_range descending (most variable n-grams first),
     then by p_fdr ascending within ties.
@@ -461,10 +461,10 @@ def build_aggregate_summary(
     Compute four aggregate summaries of the BoW n-gram distributions.
 
     Returns a dict with keys:
-      'tfidf'       — TF-IDF scores per n-gram per group
-      'cosine'      — pairwise cosine similarity between group vectors
-      'js'          — pairwise Jensen-Shannon divergence between groups
-      'dominant'    — top_dominant n-grams per group per n-gram size
+      'tfidf'       TF-IDF scores per n-gram per group
+      'cosine'      pairwise cosine similarity between group vectors
+      'js'          pairwise Jensen-Shannon divergence between groups
+      'dominant'    top_dominant n-grams per group per n-gram size
                       (ranked by TF-IDF score)
 
     All four DataFrames are tall (n-gram size as a column where relevant)
@@ -475,7 +475,7 @@ def build_aggregate_summary(
     TF  = normalised frequency of n-gram in this group
     IDF = log( n_groups / (1 + n_groups_where_ngram_appears) )
     TF-IDF highlights n-grams that are frequent in one group but
-    rare across others — exactly what's distinctive per group.
+    rare across others exactly what's distinctive per group.
 
     Cosine similarity
     -----------------
@@ -613,7 +613,7 @@ def plot_cosine_heatmap(
     fig, axes = plt.subplots(1, n_sizes,
                              figsize=(max(4, n_grps * 1.2 + 1) * n_sizes, n_grps * 0.9 + 2),
                              squeeze=False)
-    fig.suptitle(f"{label} — pairwise cosine similarity", fontsize=11)
+    fig.suptitle(f"{label} pairwise cosine similarity", fontsize=11)
 
     for ax, n in zip(axes[0], ngram_sizes):
         mat = np.eye(n_grps)   # diagonal = 1 (self-similarity)
@@ -667,7 +667,7 @@ def plot_js_heatmap(
     fig, axes = plt.subplots(1, n_sizes,
                              figsize=(max(4, n_grps * 1.2 + 1) * n_sizes, n_grps * 0.9 + 2),
                              squeeze=False)
-    fig.suptitle(f"{label} — pairwise JS divergence (lower = more similar)", fontsize=11)
+    fig.suptitle(f"{label} pairwise JS divergence (lower = more similar)", fontsize=11)
 
     for ax, n in zip(axes[0], ngram_sizes):
         mat = np.zeros((n_grps, n_grps))
@@ -724,7 +724,7 @@ def plot_dominant_ngrams(
         figsize=(max(6, top_n * 0.55) * n_sizes, max(3, n_grps * 2.8)),
         squeeze=False,
     )
-    fig.suptitle(f"{label} — dominant n-grams by TF-IDF", fontsize=12, y=1.01)
+    fig.suptitle(f"{label} dominant n-grams by TF-IDF", fontsize=12, y=1.01)
 
     for gi, grp in enumerate(groups):
         color = cmap(gi / max(n_grps, 1))
@@ -946,7 +946,7 @@ def plot_bow_dendrogram(
         fig_w = max(7, n_grps * 0.8 + 2)
         fig, ax = plt.subplots(figsize=(fig_w, 5))
 
-        # scipy_dendrogram returns ddata which includes "ivl" — the leaf labels
+        # scipy_dendrogram returns ddata which includes "ivl" the leaf labels
         # in left-to-right display order.  We use this to colour tick labels
         # reliably without needing a canvas draw pass.
         ddata = scipy_dendrogram(
@@ -972,7 +972,7 @@ def plot_bow_dendrogram(
                 tick.set_color("#2a6099")
 
         ax.set_title(
-            f"{label} — JS divergence clustering  |  {n}-gram\n"
+            f"{label} JS divergence clustering  |  {n}-gram\n"
             f"(AVGLINK; distance = JS divergence between n-gram distributions)",
             fontsize=10,
         )
@@ -1048,7 +1048,7 @@ def run_comparison(
             plot_heatmap(
                 freq_col.reset_index().rename(columns={"ngram": "index"}).set_index("index"),
                 n=n,
-                title=f"{label} — mean frequency",
+                title=f"{label} mean frequency",
                 outdir=level_dir,
                 fname=f"ngram_bow_{label}_heatmap_n{n}.png",
                 top_n=top_n_heatmap,
@@ -1439,7 +1439,7 @@ def main():
                 patient_code_seqs.setdefault(f"patient_{code}", [])
                 patient_code_seqs[f"patient_{code}"].extend(blk["full_sequence"])
 
-    # Add non-important as baseline — reuse the already-built sequences
+    # Add non-important as baseline reuse the already-built sequences
     patient_code_seqs["non_important"] = importance_sequences["non_important"]
 
     if len(patient_code_seqs) >= 2:
@@ -1458,7 +1458,7 @@ def main():
             save=True, show=args.show,
         )
     else:
-        print("  Not enough patient codes found — skipping.")
+        print("  Not enough patient codes found skipping.")
 
     # ── 5. Therapist importance codes vs non-important ────────────────────────
     print("\n--- Building therapist-code sequences ---")
@@ -1502,7 +1502,7 @@ def main():
             save=True, show=args.show,
         )
     else:
-        print("  Not enough therapist codes found — skipping.")
+        print("  Not enough therapist codes found skipping.")
 
     # ── directory summary ─────────────────────────────────────────────────────
     print(f"\nDone. Outputs in: {args.outdir}")
