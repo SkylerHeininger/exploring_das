@@ -220,3 +220,6 @@ ngram_bow_output/
 cnn_output/
 DA_notes.txt
 group_output.png
+top5.txt
+
+

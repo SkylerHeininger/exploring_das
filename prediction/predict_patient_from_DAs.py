@@ -1,56 +1,10 @@
 """
-cnn_importance.py
+Skyler Heininger
+OpenRecordings
+Script for performing training of 1d CNN.
 
-Predicts per-DA importance (patient or therapist) from dialogue act sequences
-using a 1D CNN.  Each transcript is processed as one full sequence in a single
-forward pass, producing one binary prediction per DA position.
-
-Task
-----
-Sequence-to-sequence classification: given a full transcript of N DA tokens,
-predict for each position whether that DA is important (1) or not (0).
-
-Model architecture
-------------------
-  Embedding        — learnable dense vector per (da_label × speaker) token
-  Optional TS      — normalised timestamp appended as extra channel
-  1D Conv stack    — num_layers conv layers with ReLU + Dropout, each with
-                     kernel_size and same-padding so output length = input length
-  Linear → logit   — per-position binary output (one logit per DA)
-
-The key parameter controlling how much context each prediction uses is:
-
-    Effective receptive field = num_layers × (kernel_size - 1) + 1
-
-So kernel_size=5 + num_layers=3 gives a receptive field of 13 DAs (±6 on each
-side of each predicted position).  Increase kernel_size for wider local context;
-increase num_layers for deeper context at the same per-layer cost.
-
-Class imbalance
----------------
-BCEWithLogitsLoss(pos_weight=n_neg/n_pos) up-weights false negatives on
-important DAs proportionally to their rarity.
-Optional --downsample_neg_rate randomly excludes a fraction of non-important
-positions from the loss each epoch, further reducing negative gradient dominance.
-
-Evaluation
-----------
-LOOCV: one fold per transcript.  Test always uses the full unmodified transcript.
-Primary metric: F1 for the important=1 class.
-
-Usage
------
-python cnn_importance.py \\
-    --dir /path/to/csv_dir \\
-    --granularity groups \\
-    --target patient \\
-    --kernel_size 5 \\
-    --num_layers 3 \\
-    --outdir cnn_output/
-
-Requires: torch  (pip install torch)
-          scikit-learn
-Drop alongside analyze_da_patterns.py.
+Use args to modify model depth and width, the larger seems better, 
+but at a certain point they become too hard to train on each fold of LOOCV.
 """
 
 from __future__ import annotations
@@ -465,18 +419,18 @@ def run_loocv(
     agg_f1_imp   = f1_score(all_true, all_pred, pos_label=1,
                             average="binary", zero_division=0)
     agg_f1_mac   = f1_score(all_true, all_pred,
-                            average="macro", zero_division=0)
+                            average="weighted", zero_division=0)
     mean_fold_f1 = float(np.mean([r["f1_important"] for r in fold_results]))
     std_fold_f1  = float(np.std( [r["f1_important"] for r in fold_results]))
 
     print(f"  Pooled F1(important): {agg_f1_imp:.4f}")
-    print(f"  Pooled F1(macro):     {agg_f1_mac:.4f}")
+    print(f"  Pooled F1(weighted):     {agg_f1_mac:.4f}")
     print(f"  Per-fold F1(imp):  mean={mean_fold_f1:.4f}  std={std_fold_f1:.4f}")
 
     results = {
         "fold_results":            fold_results,
         "pooled_f1_imp":           round(agg_f1_imp,  4),
-        "pooled_f1_macro":         round(agg_f1_mac,  4),
+        "pooled_f1_weighted":         round(agg_f1_mac,  4),
         "mean_fold_f1_imp":        round(mean_fold_f1, 4),
         "std_fold_f1_imp":         round(std_fold_f1,  4),
         "effective_receptive_field": eff,
@@ -633,3 +587,8 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# Useful cmds:
+# grep pooled_f1_imp ./*
+
