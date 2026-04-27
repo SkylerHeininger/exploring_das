@@ -1262,6 +1262,17 @@ def _extract_ngrams(seq: list[str], n: int) -> list[tuple]:
     return [tuple(seq[i:i+n]) for i in range(len(seq) - n + 1)]
 
 
+def _ngram_counts(seqs: list[list[str]], n: int) -> tuple[list[tuple], np.ndarray]:
+    """Return (sorted vocab, count vector) for n-grams across all sequences."""
+    counts: dict[tuple, int] = defaultdict(int)
+    for seq in seqs:
+        for ng in _extract_ngrams(seq, n):
+            counts[ng] += 1
+    vocab = sorted(counts.keys())
+    vec   = np.array([counts[ng] for ng in vocab], dtype=float)
+    return vocab, vec
+
+
 def _ngram_js(seqs_a: list[list[str]],
               seqs_b: list[list[str]],
               n: int) -> float:
@@ -1284,6 +1295,56 @@ def _ngram_js(seqs_a: list[list[str]],
 
     va = _vec(seqs_a) + 1e-10
     vb = _vec(seqs_b) + 1e-10
+    va /= va.sum();  vb /= vb.sum()
+    m   = 0.5 * (va + vb)
+    kl  = lambda p, q: float(np.sum(p * np.log(p / q)))
+    return 0.5 * kl(va, m) + 0.5 * kl(vb, m)
+
+
+def _combined_ngram_js(seqs_a: list[list[str]],
+                       seqs_b: list[list[str]],
+                       ngram_ns: list[int]) -> float:
+    """
+    Compute JS divergence on a single concatenated feature vector built from
+    all n-gram orders in ngram_ns.
+
+    For each n, the unified vocab across seqs_a and seqs_b is built, counts
+    are extracted, then all per-order count vectors are concatenated before
+    normalising.  This means a single JS is computed over the joint
+    unigram+bigram+trigram (etc.) space, capturing both frequency and
+    sequential patterns in one number.
+
+    Counts are NOT normalised per order before concatenation — raw counts
+    are concatenated so that higher-order n-grams naturally contribute in
+    proportion to how often they appear.
+    """
+    vecs_a, vecs_b = [], []
+
+    for n in ngram_ns:
+        all_ngrams = sorted({
+            ng
+            for seqs in (seqs_a, seqs_b)
+            for seq in seqs
+            for ng in _extract_ngrams(seq, n)
+        })
+        if not all_ngrams:
+            continue
+
+        def _vec(seqs, vocab, _n=n):   # capture n by value via default arg
+            counts = defaultdict(int)
+            for seq in seqs:
+                for ng in _extract_ngrams(seq, _n):
+                    counts[ng] += 1
+            return np.array([counts.get(ng, 0) for ng in vocab], dtype=float)
+
+        vecs_a.append(_vec(seqs_a, all_ngrams))
+        vecs_b.append(_vec(seqs_b, all_ngrams))
+
+    if not vecs_a:
+        return np.nan
+
+    va = np.concatenate(vecs_a) + 1e-10
+    vb = np.concatenate(vecs_b) + 1e-10
     va /= va.sum();  vb /= vb.sum()
     m   = 0.5 * (va + vb)
     kl  = lambda p, q: float(np.sum(p * np.log(p / q)))
@@ -1415,25 +1476,32 @@ def analyse_performance_ceiling(
                 kl      = lambda p, q: float(np.sum(p * np.log(p / q)))
                 js_freq = 0.5 * kl(va_n, m) + 0.5 * kl(vb_n, m)
 
-                # N-gram JS for each n
+                # N-gram JS for each n (supplemental)
                 ngram_js_vals = {
                     n: _ngram_js(seqs_a, seqs_b, n)
                     for n in ngram_ns
                 }
+                # Combined ngram JS: single JS over concatenated n-gram vectors
+                js_combined   = _combined_ngram_js(seqs_a, seqs_b, ngram_ns)
 
-                kappa    = _js_to_kappa(js_freq)
-                f1_ceil  = _kappa_to_f1_ceiling(kappa)
+                kappa         = _js_to_kappa(js_freq)
+                f1_ceil       = _kappa_to_f1_ceiling(kappa)
+                kappa_ngram   = _js_to_kappa(js_combined) if np.isfinite(js_combined) else np.nan
+                f1_ceil_ngram = _kappa_to_f1_ceiling(kappa_ngram) if np.isfinite(kappa_ngram) else np.nan
 
                 row = {
-                    "speaker":      speaker_label,
-                    "code":         code,
-                    "T_a":          ta,
-                    "T_b":          tb,
-                    "n_seqs_a":     len(seqs_a),
-                    "n_seqs_b":     len(seqs_b),
-                    "js_freq":      round(js_freq, 4),
-                    "kappa_analogue": round(kappa, 4),
-                    "f1_ceiling":   round(f1_ceil, 4),
+                    "speaker":              speaker_label,
+                    "code":                 code,
+                    "T_a":                  ta,
+                    "T_b":                  tb,
+                    "n_seqs_a":             len(seqs_a),
+                    "n_seqs_b":             len(seqs_b),
+                    "js_freq":              round(js_freq, 4),
+                    "kappa_analogue":       round(kappa, 4),
+                    "f1_ceiling":           round(f1_ceil, 4),
+                    "js_combined_ngram":    round(js_combined, 4) if np.isfinite(js_combined) else None,
+                    "kappa_combined_ngram": round(kappa_ngram, 4) if np.isfinite(kappa_ngram) else None,
+                    "f1_ceiling_ngram":     round(f1_ceil_ngram, 4) if np.isfinite(f1_ceil_ngram) else None,
                 }
                 for n, js_ng in ngram_js_vals.items():
                     row[f"js_{n}gram"] = round(js_ng, 4) if np.isfinite(js_ng) else None
@@ -1444,11 +1512,13 @@ def analyse_performance_ceiling(
                     f"{n}-gram JS={js_ng:.3f}" if np.isfinite(js_ng) else f"{n}-gram JS=N/A"
                     for n, js_ng in ngram_js_vals.items()
                 )
+                combined_str  = f"{js_combined:.3f}"   if np.isfinite(js_combined)   else "N/A"
+                f1_ngram_str  = f"{f1_ceil_ngram:.3f}" if np.isfinite(f1_ceil_ngram) else "N/A"
                 txt_lines.append(
                     f"  T{ta} vs T{tb}:  "
-                    f"freq JS={js_freq:.3f}  "
-                    f"kappa={kappa:.3f}  "
-                    f"F1_ceil={f1_ceil:.3f}  |  {ngram_str}  "
+                    f"freq JS={js_freq:.3f}  F1_ceil={f1_ceil:.3f}  "
+                    f"combined_ngram JS={combined_str}  F1_ceil_ngram={f1_ngram_str}  "
+                    f"kappa={kappa:.3f}  |  {ngram_str}  "
                     f"(n={len(seqs_a)}, {len(seqs_b)})"
                 )
 
@@ -1791,19 +1861,29 @@ def analyse_extended_ceiling(
             k  = js   # Task 1: high JS = separable = high kappa (JS used directly)
             f1 = _kappa_to_f1_ceiling(k)
 
+            js_comb       = _combined_ngram_js(imp_seqs, nim_seqs, ngram_ns)
+            k_comb        = js_comb if np.isfinite(js_comb) else np.nan
+            f1_comb       = _kappa_to_f1_ceiling(k_comb) if np.isfinite(k_comb) else np.nan
             ngram_str = "  ".join(
                 f"{n}-gram JS={_ngram_js(imp_seqs, nim_seqs, n):.3f}"
                 if np.isfinite(_ngram_js(imp_seqs, nim_seqs, n)) else f"{n}-gram N/A"
                 for n in ngram_ns
             )
+            comb_str   = f"{js_comb:.3f}" if np.isfinite(js_comb) else "N/A"
+            f1comb_str = f"{f1_comb:.3f}" if np.isfinite(f1_comb) else "N/A"
             txt.append(
-                f"  T{t}:  JS={js:.3f}  kappa={k:.3f}  F1_ceil={f1:.3f}"
+                f"  T{t}:  JS={js:.3f}  F1_ceil={f1:.3f}"
+                f"  combined_ngram_JS={comb_str}  F1_ceil_ngram={f1comb_str}"
+                f"  kappa={k:.3f}"
                 f"  n_imp={len(imp_seqs)}  n_nonim={len(nim_seqs)}"
                 f"  |  {ngram_str}"
             )
             imp_rows.append({
                 "speaker": speaker_label, "therapist": t, "pooled": False,
                 "js": round(js,4), "kappa": round(k,4), "f1_ceiling": round(f1,4),
+                "js_combined_ngram":    round(js_comb,4) if np.isfinite(js_comb) else None,
+                "kappa_combined_ngram": round(k_comb,4)  if np.isfinite(k_comb)  else None,
+                "f1_ceiling_ngram":     round(f1_comb,4) if np.isfinite(f1_comb) else None,
                 "n_important": len(imp_seqs), "n_nonimportant": len(nim_seqs),
                 **{f"js_{n}gram": round(_ngram_js(imp_seqs, nim_seqs, n), 4)
                    if np.isfinite(_ngram_js(imp_seqs, nim_seqs, n)) else None
@@ -1819,19 +1899,29 @@ def analyse_extended_ceiling(
             js = _js(va.copy(), vb.copy())
             k  = js   # Task 1: high JS = separable = high kappa (JS used directly)
             f1 = _kappa_to_f1_ceiling(k)
+            js_comb       = _combined_ngram_js(all_imp, all_nonim, ngram_ns)
+            k_comb        = js_comb if np.isfinite(js_comb) else np.nan
+            f1_comb       = _kappa_to_f1_ceiling(k_comb) if np.isfinite(k_comb) else np.nan
             ngram_str = "  ".join(
                 f"{n}-gram JS={_ngram_js(all_imp, all_nonim, n):.3f}"
                 if np.isfinite(_ngram_js(all_imp, all_nonim, n)) else f"{n}-gram N/A"
                 for n in ngram_ns
             )
+            comb_str   = f"{js_comb:.3f}" if np.isfinite(js_comb) else "N/A"
+            f1comb_str = f"{f1_comb:.3f}" if np.isfinite(f1_comb) else "N/A"
             txt.append(
-                f"\n  POOLED:  JS={js:.3f}  kappa={k:.3f}  F1_ceil={f1:.3f}"
+                f"\n  POOLED:  JS={js:.3f}  F1_ceil={f1:.3f}"
+                f"  combined_ngram_JS={comb_str}  F1_ceil_ngram={f1comb_str}"
+                f"  kappa={k:.3f}"
                 f"  n_imp={len(all_imp)}  n_nonim={len(all_nonim)}"
                 f"  |  {ngram_str}"
             )
             imp_rows.append({
                 "speaker": speaker_label, "therapist": "pooled", "pooled": True,
                 "js": round(js,4), "kappa": round(k,4), "f1_ceiling": round(f1,4),
+                "js_combined_ngram":    round(js_comb,4) if np.isfinite(js_comb) else None,
+                "kappa_combined_ngram": round(k_comb,4)  if np.isfinite(k_comb)  else None,
+                "f1_ceiling_ngram":     round(f1_comb,4) if np.isfinite(f1_comb) else None,
                 "n_important": len(all_imp), "n_nonimportant": len(all_nonim),
                 **{f"js_{n}gram": round(_ngram_js(all_imp, all_nonim, n), 4)
                    if np.isfinite(_ngram_js(all_imp, all_nonim, n)) else None
@@ -1907,6 +1997,81 @@ def analyse_extended_ceiling(
                 f"  F1_ceil={mean_f1:.3f}  codes={p_codes}"
                 f"\n    pairs: " + "  ".join(pair_strs)
             )
+
+        # ── TASK 3: per-code ceiling (code vs all non-code) ───────────────────
+        # Positive: sequences labeled with code C (pooled across therapists)
+        # Negative: all other-code important sequences + all non-important seqs
+        txt.append("\n--- TASK 3: Per-code ceiling (code vs all non-code) ---\n")
+        txt.append(
+            "  Positive = sequences labeled with that code (pooled)\n"
+            "  Negative = all other-code important sequences + non-important\n"
+            "  JS interpretation: high JS = code is separable from background\n"
+        )
+
+        # All non-important sequences for this speaker slice (pooled)
+        all_nonim_seqs = [s for seqs in nonim_by_t.values() for s in seqs]
+
+        code_ceil_rows = []
+        for code in p_codes:
+            pos_seqs = pooled_code[code]
+
+            # Negative: other-code important seqs + non-important
+            neg_seqs = [
+                s for other_code, seqs in pooled_code.items()
+                if other_code != code
+                for s in seqs
+            ] + all_nonim_seqs
+
+            if not pos_seqs or not neg_seqs:
+                continue
+
+            # Frequency JS
+            va_freq = _da_counts(pos_seqs, all_da)
+            vb_freq = _da_counts(neg_seqs, all_da)
+            js_freq = _js(va_freq.copy(), vb_freq.copy())
+            k_freq  = js_freq   # Task 1 style: high JS = separable = high kappa
+            f1_freq = _kappa_to_f1_ceiling(k_freq)
+
+            # Combined ngram JS
+            js_comb   = _combined_ngram_js(pos_seqs, neg_seqs, ngram_ns)
+            k_comb    = js_comb if np.isfinite(js_comb) else np.nan
+            f1_comb   = _kappa_to_f1_ceiling(k_comb) if np.isfinite(k_comb) else np.nan
+
+            # Per-order ngram JS (supplemental)
+            ngram_vals = {
+                n: _ngram_js(pos_seqs, neg_seqs, n) for n in ngram_ns
+            }
+            ngram_str = "  ".join(
+                f"{n}-gram JS={v:.3f}" if np.isfinite(v) else f"{n}-gram N/A"
+                for n, v in ngram_vals.items()
+            )
+            comb_str = f"{js_comb:.3f}" if np.isfinite(js_comb) else "N/A"
+            f1c_str  = f"{f1_comb:.3f}" if np.isfinite(f1_comb) else "N/A"
+
+            txt.append(
+                f"  {code}:  freq JS={js_freq:.3f}  F1_ceil={f1_freq:.3f}"
+                f"  combined_ngram_JS={comb_str}  F1_ceil_ngram={f1c_str}"
+                f"  n_pos={len(pos_seqs)}  n_neg={len(neg_seqs)}"
+                f"  |  {ngram_str}"
+            )
+            code_ceil_rows.append({
+                "speaker":              speaker_label,
+                "code":                 code,
+                "js_freq":              round(js_freq, 4),
+                "kappa_freq":           round(k_freq, 4),
+                "f1_ceiling_freq":      round(f1_freq, 4),
+                "js_combined_ngram":    round(js_comb, 4) if np.isfinite(js_comb) else None,
+                "kappa_combined_ngram": round(k_comb, 4)  if np.isfinite(k_comb)  else None,
+                "f1_ceiling_ngram":     round(f1_comb, 4) if np.isfinite(f1_comb) else None,
+                "n_pos":                len(pos_seqs),
+                "n_neg":                len(neg_seqs),
+                **{f"js_{n}gram": round(v, 4) if np.isfinite(v) else None
+                   for n, v in ngram_vals.items()},
+            })
+
+        if code_ceil_rows:
+            disc_rows.extend([{**r, "comparison": "code_vs_noncode"}
+                               for r in code_ceil_rows])
 
     # ── save outputs ──────────────────────────────────────────────────────────
     if imp_rows:
@@ -2144,7 +2309,7 @@ def main():
     parser.add_argument("--js_disagree",   type=float, default=0.5,
                         help="JS divergence above which therapists disagree "
                              "(default: 0.5).")
-    parser.add_argument("--ngram_ns",      type=str,   default="1,2,3,4,5,6,7,8,9,10",
+    parser.add_argument("--ngram_ns",      type=str,   default="4,5,6,7,8,9,10,11,12,13",
                         help="Comma-separated n-gram sizes for sequence "
                              "consistency analysis (default: 1,2,3).")
     parser.add_argument("--window_size",   type=int,   default=0,
