@@ -1,48 +1,3 @@
-"""
-llm_importance.py
-
-Predicts per-DA importance (patient or therapist) using a local LLM via an
-OpenAI-compatible API (LM Studio, Ollama, vLLM, llama.cpp server, etc.).
-
-Each DA is classified by presenting the LLM with a context window of
-preceding and following DAs alongside the spoken text, asking it to classify
-the centre DA as important or not important.
-
-Positive examples from the training split are included in the prompt to
-guide the LLM toward the correct label format and style.
-
-Patient split
--------------
-Patient ID is parsed from the filename as the two digits following "AC"
-(e.g. "randomAC01_session.csv"-> patient "01").
-A fixed train/test split is performed: 5 patients for training (positive
-example pool), 15 for testing.  Split is seeded for reproducibility.
-
-Context window
---------------
-For each target DA at position i, the prompt includes:
-  - context_window DAs before (or [START OF TRANSCRIPT] padding)
-  - the target DA (marked clearly)
-  - context_window DAs after (or [END OF TRANSCRIPT] padding)
-
-Each DA in the window is shown as:
-  Speaker: DA_type - "spoken text"
-
-Usage
------
-python llm_importance.py \\
-    --dir /path/to/csv_dir \\
-    --target patient \\
-    --text_col text \\
-    --server_url http://localhost:1234/v1 \\
-    --model_path /models/lmstudio-community/gemma-3-12b-it \\
-    --outdir llm_output/
-
-Requires: openai, pandas, scikit-learn
-"""
-
-from __future__ import annotations
-
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -97,6 +52,7 @@ def _normalise_speaker(raw: str) -> str:
     if isinstance(raw, str) and raw.strip().lower() == "therapist":
         return "therapist"
     return "patient"
+
 
 def load_transcripts(
     dir_path: Path,
@@ -288,35 +244,85 @@ def build_positive_examples(
     return positives[:n_examples]
 
 
+def build_negative_examples(
+    train_transcripts: dict[str, dict],
+    context_window: int,
+    n_examples: int = 16,
+    max_neg_length: int = 50,
+) -> list[dict]:
+    """
+    Collect negative (important=0) examples from training transcripts.
+    Samples individual non-important DA positions, capping the context
+    window text at max_neg_length DAs to avoid very long non-important
+    runs dominating the prompt.
+    Returns a list of {context_str, label} dicts.
+    """
+    negatives = []
+
+    for rec in train_transcripts.values():
+        labels = rec["labels"]
+        n      = len(labels)
+        for i, lbl in enumerate(labels):
+            if lbl == 0:
+                # Cap context window to avoid including too many DAs
+                effective_window = min(context_window, max_neg_length // 2)
+                ctx = build_context_window(rec, i, effective_window)
+                negatives.append({"context": ctx, "label": 0})
+
+    rng = random.Random(SEED + 1)
+    rng.shuffle(negatives)
+    return negatives[:n_examples]
+
+
 def construct_prompt(
     context_str: str,
     positive_examples: list[dict],
+    negative_examples: list[dict],
     n_few_shot: int = 8,
 ) -> str:
     """
-    Construct the full few-shot prompt for one target DA.
+    Construct the balanced few-shot prompt for one target DA.
 
-    Shows n_few_shot positive examples followed by the target DA window.
-    The model is asked to classify only the TARGET DA.
+    Shows n_few_shot//2 positive and n_few_shot//2 negative examples
+    interleaved, then asks the model to classify the target DA.
+    Balanced examples help prevent the model defaulting to "important".
     """
-    examples = positive_examples[:n_few_shot]
+    n_pos = n_few_shot // 2
+    n_neg = n_few_shot - n_pos
+    pos   = positive_examples[:n_pos]
+    neg   = negative_examples[:n_neg]
+
+    # Interleave positive and negative examples
+    all_examples = []
+    for p, n in zip(pos, neg):
+        all_examples.append(p)
+        all_examples.append(n)
+    # Append any remainder
+    for ex in pos[len(neg):]:
+        all_examples.append(ex)
+    for ex in neg[len(pos):]:
+        all_examples.append(ex)
 
     prompt_lines = []
 
-    if examples:
+    if all_examples:
         prompt_lines.append(
-            "Below are examples of dialogue act sequences where the TARGET DA "
-            "is important:\n"
+            "Below are examples of dialogue act sequences with their "
+            "classifications. Study both important and not important examples "
+            "carefully before classifying the target.\n"
         )
-        for i, ex in enumerate(examples):
+        for i, ex in enumerate(all_examples):
+            label_str = "important" if ex["label"] == 1 else "not important"
             prompt_lines.append(f"Example {i+1}:")
             prompt_lines.append(ex["context"])
-            prompt_lines.append("Classification: important\n")
+            prompt_lines.append(f"Classification: {label_str}\n")
 
     prompt_lines.append(
         "Now classify the TARGET DA in the following sequence as either "
         "'important' or 'not important'.\n"
         "Only classify the TARGET DA and text marked with >>>. "
+        "Most DAs are NOT important — only classify as important if the "
+        "content is clinically or therapeutically significant.\n"
         "Answer with exactly one of: 'important' or 'not important'.\n"
     )
     prompt_lines.append(context_str)
@@ -325,49 +331,113 @@ def construct_prompt(
     return "\n".join(prompt_lines)
 
 
+def load_model(model_id: str, hf_cache_dir: str | None = None):
+    """
+    Load Gemma3ForConditionalGeneration + AutoProcessor from HuggingFace.
+    This is the correct class for google/gemma-3-4b-it and all Gemma 3
+    models 4B and above, which are multimodal (vision-language) checkpoints.
+    Gemma3ForCausalLM is only correct for the 1B text-only variant.
+
+    Returns (model, processor) tuple.
+    """
+    import torch
+    from transformers import AutoProcessor, Gemma3ForConditionalGeneration
+
+    if hf_cache_dir:
+        os.environ["HF_HOME"]            = hf_cache_dir
+        os.environ["TRANSFORMERS_CACHE"] = hf_cache_dir
+        os.environ["HF_DATASETS_CACHE"]  = hf_cache_dir
+        print(f"HuggingFace cache dir: {hf_cache_dir}", flush=True)
+
+    print(f"Loading processor: {model_id} …", flush=True)
+    processor = AutoProcessor.from_pretrained(model_id)
+
+    print(f"Loading model: {model_id} …", flush=True)
+    model = Gemma3ForConditionalGeneration.from_pretrained(
+        model_id,
+        device_map="auto",
+    ).eval()
+
+    device = next(model.parameters()).device
+    print(f"Model loaded on device: {device}", flush=True)
+
+    return model, processor
+
+
 def generate_prediction(
     prompt: str,
     system: str,
-    server_url: str,
-    model_path: str,
+    model_and_tokenizer: tuple,
     temperature: float = 0.0,
-    max_tokens: int = 5,
+    max_tokens: int = 10,
     retry_note: str = "",
 ) -> str:
     """
-    Call the local LLM server and return the raw response string.
-    retry_note is appended to the prompt on retry attempts to remind
-    the model of the required output format.
+    Run inference using Gemma3ForConditionalGeneration + AutoProcessor.
+    retry_note is appended to the prompt on retry attempts.
     """
-    from openai import OpenAI
-    client = OpenAI(base_url=server_url, api_key="lm-studio")
+    import torch
+
+    model, processor = model_and_tokenizer
     full_prompt = prompt if not retry_note else f"{prompt}{retry_note}"
-    completion = client.chat.completions.create(
-        model=model_path,
-        messages=[
-            {"role": "system",  "content": system},
-            {"role": "user",    "content": full_prompt},
-        ],
-        temperature=temperature,
-        max_tokens=max_tokens,
-        top_p=0.95,
+
+    messages = [
+        {
+            "role": "system",
+            "content": [{"type": "text", "text": system}],
+        },
+        {
+            "role": "user",
+            "content": [{"type": "text", "text": full_prompt}],
+        },
+    ]
+
+    inputs = processor.apply_chat_template(
+        messages,
+        add_generation_prompt=True,
+        tokenize=True,
+        return_dict=True,
+        return_tensors="pt",
+    ).to(model.device)
+
+    input_len = inputs["input_ids"].shape[-1]
+
+    gen_kwargs = dict(
+        max_new_tokens=max_tokens,
+        do_sample=temperature > 0.0,
     )
-    response = completion.choices[0].message.content
+    if temperature > 0.0:
+        gen_kwargs["temperature"] = temperature
+        gen_kwargs["top_p"] = 0.95
+
+    with torch.inference_mode():
+        output_ids = model.generate(**inputs, **gen_kwargs)
+
+    # Decode only the newly generated tokens
+    new_tokens = output_ids[0][input_len:]
+    response   = processor.decode(new_tokens, skip_special_tokens=True).strip()
+
     logger.debug(f"Response: {response}")
     return response
 
+def parse_prediction(response: str) -> int | None:
+    """
+    Parse LLM response to binary label. 0=not important, 1=important.
+    Returns None if unparseable so caller can retry.
 
-
-def parse_prediction(response: str) -> int:
-    """Parse LLM response to binary label. 0=not important, 1=important."""
+    Checks for "not important" before "important" to avoid the substring
+    match trap, and anchors to the start of the response since the model
+    should answer with just the label.
+    """
     r = response.lower().strip()
-    if "not important"in r:
+    # Check "not important" first — must come before "important" check
+    # since "important" is a substring of "not important"
+    if re.search(r"\bnot important\b", r):
         return 0
-    if "important"in r:
+    if re.search(r"\bimportant\b", r):
         return 1
-    # Fallback: default to not important if unparseable
-    logger.warning(f"Unparseable response: '{response}' — defaulting to 0")
-    return 0
+    logger.warning(f"Unparseable response: '{response}'")
+    return None
 
 
 SYSTEM_PROMPT = (
@@ -423,8 +493,8 @@ def evaluate(y_true: list[int], y_pred: list[int]) -> dict:
 def run_predictions(
     test_transcripts: dict[str, dict],
     positive_examples: list[dict],
-    server_url: str,
-    model_path: str,
+    negative_examples: list[dict],
+    model_and_tokenizer: tuple,
     context_window: int,
     n_few_shot: int,
     temperature: float,
@@ -453,7 +523,7 @@ def run_predictions(
         for i in range(n):
             context_str = build_context_window(rec, i, context_window)
             prompt = construct_prompt(context_str, positive_examples,
-                                           n_few_shot)
+                                           negative_examples, n_few_shot)
 
             pred = None
             response = ""
@@ -469,8 +539,7 @@ def run_predictions(
                     )
                 )
                 response = generate_prediction(
-                    prompt, SYSTEM_PROMPT, server_url, model_path,
-                    temperature, max_tokens,
+                    prompt, SYSTEM_PROMPT, model_and_tokenizer,
                     retry_note=retry_note,
                 )
                 pred = parse_prediction(response)
@@ -524,7 +593,8 @@ def main():
     parser = argparse.ArgumentParser(
         description=(
             "LLM-based per-DA importance classifier with context window.\n"
-            "Uses an OpenAI-compatible local server (LM Studio, Ollama, etc.)."
+            "Loads the model in-process via HuggingFace transformers.\n"
+            "Model is downloaded automatically on first run and cached locally."
         )
     )
 
@@ -545,20 +615,29 @@ def main():
                         help="Number of DAs before and after the target DA to "
                              "include in the prompt. (default: 5)")
     parser.add_argument("--n_few_shot",     type=int, default=8,
-                        help="Number of positive few-shot examples to include "
-                             "in the prompt. (default: 8)")
+                        help="Number of few-shot examples to include in the "
+                             "prompt total, split 50/50 positive/negative. "
+                             "(default: 8)")
+    parser.add_argument("--max_neg_length", type=int, default=50,
+                        help="Maximum number of DAs to include in a negative "
+                             "example context window. Caps long non-important "
+                             "runs. (default: 50)")
 
-    parser.add_argument("--server_url",  default="http://localhost:1234/v1",
-                        help="OpenAI-compatible server URL. (default: "
-                             "http://localhost:1234/v1)")
-    parser.add_argument("--model_path",  required=True,
-                        help="Model identifier as expected by the server "
-                             "(e.g. /models/lmstudio-community/gemma-3-12b-it).")
+    parser.add_argument("--model_id",    default="google/gemma-3-4b-it",
+                        help="HuggingFace model ID. Downloaded automatically "
+                             "on first run and cached locally. "
+                             "(default: google/gemma-3-4b-it)")
+    parser.add_argument("--hf_cache_dir", default=None,
+                        help="Path to HuggingFace cache directory. Useful on "
+                             "HPC to avoid filling home quota. If not set, "
+                             "uses the default HuggingFace cache (~/.cache/huggingface).")
     parser.add_argument("--temperature", type=float, default=0.0,
                         help="LLM sampling temperature. 0.0 = deterministic. "
                              "(default: 0.0)")
     parser.add_argument("--max_tokens",  type=int, default=5,
                         help="Max tokens for LLM response. (default: 5)")
+    parser.add_argument("--max_retries",  type=int, default=3,
+                        help="Max retries for LLM response fails. (default: 3)")
 
     parser.add_argument("--outdir",  default="llm_output/")
     parser.add_argument("--verbose", action="store_true",
@@ -580,7 +659,6 @@ def main():
         raise ValueError(f"Directory not found: {args.dir}")
     os.makedirs(args.outdir, exist_ok=True)
 
-    print(f"\n{'='*60}", flush=True)
     print(f"LLM Importance Classifier", flush=True)
     print(f"target={args.target}  granularity={args.granularity}", flush=True)
     print(f"text_col={args.text_col}  context_window={args.context_window}",
@@ -588,9 +666,8 @@ def main():
     print(f"n_few_shot={args.n_few_shot}  "
           f"n_train_patients={args.n_train_patients}  "
           f"max_retries={args.max_retries}", flush=True)
-    print(f"server_url={args.server_url}", flush=True)
-    print(f"model_path={args.model_path}", flush=True)
-    print(f"{'='*60}", flush=True)
+    print(f"model_id={args.model_id}", flush=True)
+    print(f"hf_cache_dir={args.hf_cache_dir}", flush=True)
 
     transcripts = load_transcripts(
         dir_path, args.target, args.granularity, args.text_col
@@ -611,16 +688,31 @@ def main():
 
     print(f"\nBuilding positive example pool from training transcripts …",
           flush=True)
+    n_each = args.n_few_shot * 4
     positive_examples = build_positive_examples(
-        train_transcripts, args.context_window, n_examples=args.n_few_shot * 4
+        train_transcripts, args.context_window, n_examples=n_each
     )
+    negative_examples = build_negative_examples(
+        train_transcripts, args.context_window,
+        n_examples=n_each, max_neg_length=args.max_neg_length
+    )
+    n_pos_used = min(args.n_few_shot // 2, len(positive_examples))
+    n_neg_used = min(args.n_few_shot - n_pos_used, len(negative_examples))
     print(f"Found {len(positive_examples)} positive examples  "
-          f"(using {min(args.n_few_shot, len(positive_examples))} in prompt)",
-          flush=True)
+          f"(using {n_pos_used} in prompt)", flush=True)
+    print(f"Found {len(negative_examples)} negative examples  "
+          f"(using {n_neg_used} in prompt)", flush=True)
 
     if len(positive_examples) == 0:
         print("Warning: no positive examples found in training set. "
               "Proceeding without few-shot examples.", flush=True)
+    if len(negative_examples) == 0:
+        print("Warning: no negative examples found in training set.", flush=True)
+
+    print(f"\nLoading model {args.model_id} …", flush=True)
+    model_and_tokenizer = load_model(args.model_id, args.hf_cache_dir)
+    print(f"Model ready.", flush=True)
+
 
     total_test_das = sum(len(r["labels"]) for r in test_transcripts.values())
     print(f"\nRunning predictions on {len(test_transcripts)} test transcripts "
@@ -629,12 +721,13 @@ def main():
     y_true, y_pred, pred_rows = run_predictions(
         test_transcripts=test_transcripts,
         positive_examples=positive_examples,
-        server_url=args.server_url,
-        model_path=args.model_path,
+        negative_examples=negative_examples,
+        model_and_tokenizer=model_and_tokenizer,
         context_window=args.context_window,
         n_few_shot=args.n_few_shot,
         temperature=args.temperature,
         max_tokens=args.max_tokens,
+        max_retries=args.max_retries,
         verbose=args.verbose,
     )
 
@@ -661,9 +754,9 @@ def main():
             "context_window": args.context_window,
             "n_few_shot": args.n_few_shot,
             "n_train_patients": args.n_train_patients,
-            "model_path": args.model_path,
-            "server_url": args.server_url,
+            "model_id": args.model_id,
             "temperature": args.temperature,
+            "max_neg_length": args.max_neg_length,
             "n_test_das": len(y_true),
             "n_test_pos": sum(y_true),
             "max_retries": args.max_retries,

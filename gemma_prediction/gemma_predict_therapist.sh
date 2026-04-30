@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Name of the job
-#SBATCH --job-name=aud_g_da
+#SBATCH --job-name=aud_g_da_t
 
 # Number of compute nodes
 #SBATCH --nodes=1
@@ -13,14 +13,14 @@
 #SBATCH --partition gpuq
 
 # Request the GPU resources
-#SBATCH --gres=gpu:2
+#SBATCH --gres=gpu:1
 
 # Walltime (job duration)
 #SBATCH --time=04:00:00
 
 
-#SBATCH --output=predict.out
-#SBATCH --error=predict.err
+#SBATCH --output=tpredict.out
+#SBATCH --error=tpredict.err
 
 nvidia-smi
 module load conda

@@ -223,5 +223,6 @@ group_output.png
 top5.txt
 coding_consistency_output/
 predict_ngrams.**
+runs/
 
 

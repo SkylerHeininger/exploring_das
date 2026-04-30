@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Name of the job
-#SBATCH --job-name=aud_g_da
+#SBATCH --job-name=aud_2
 
 # Number of compute nodes
 #SBATCH --nodes=1
@@ -13,16 +13,16 @@
 #SBATCH --partition gpuq
 
 # Request the GPU resources
-#SBATCH --gres=gpu:2
+#SBATCH --gres=gpu:1
 
 # Walltime (job duration)
 #SBATCH --time=04:00:00
 
 
-#SBATCH --output=predict.out
-#SBATCH --error=predict.err
+#SBATCH --output=v2tpredict.out
+#SBATCH --error=v2tpredict.err
 
 nvidia-smi
 module load conda
 conda activate paullab
-python -m gemma_prediction.gemma_prediction --dir output/ --text_col spoken_text --n_train_patients 10 --n_few_shot 16 --verbose --context_window 7 --target therapist
+python -m gemma_prediction.gemma_predict_second_visit --dir output/ --text_col spoken_text --verbose --context_window 7 --target therapist
