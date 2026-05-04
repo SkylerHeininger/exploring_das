@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Name of the job
-#SBATCH --job-name=aud_2
+#SBATCH --job-name=abl
 
 # Number of compute nodes
 #SBATCH --nodes=1
@@ -19,12 +19,10 @@
 #SBATCH --time=04:00:00
 
 
-#SBATCH --output=4predict.out
-#SBATCH --error=4predict.err
+#SBATCH --output=ablate.out
+#SBATCH --error=ablate.err
 
 nvidia-smi
 module load conda
 conda activate paullab
-python -m gemma_prediction.gemma4_predict --dir output/ --text_col spoken_text \
- --verbose --context_window 20 --target therapist --n_few_shot 16 --max_input_tokens 20000 \
- --pos_proportion 0.4
+python -m gemma_prediction.gemma_ablation --dir output/ --text_col spoken_text --target therapist --codebook codebook.xlsx

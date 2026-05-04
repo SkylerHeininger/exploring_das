@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Name of the job
-#SBATCH --job-name=aud_2
+#SBATCH --job-name=aud_w
 
 # Number of compute nodes
 #SBATCH --nodes=1
@@ -19,12 +19,10 @@
 #SBATCH --time=04:00:00
 
 
-#SBATCH --output=4predict.out
-#SBATCH --error=4predict.err
+#SBATCH --output=mcpredict.out
+#SBATCH --error=mcpredict.err
 
 nvidia-smi
 module load conda
 conda activate paullab
-python -m gemma_prediction.gemma4_predict --dir output/ --text_col spoken_text \
- --verbose --context_window 20 --target therapist --n_few_shot 16 --max_input_tokens 20000 \
- --pos_proportion 0.4
+python -m gemma_prediction.slide_gemma4_mc --dir output/ --text_col spoken_text --verbose --codebook codebook.xlsx --max_input_tokens 12000 --target therapist --log

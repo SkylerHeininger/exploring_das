@@ -1,8 +1,80 @@
+"""
+coding_consistency.py
 
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+Analyses inter-therapist and intra-therapist consistency in importance coding,
+focusing on two questions:
 
+  1. RATE consistency   — do therapists label similar proportions of DAs as
+                          important, and do they do so consistently across
+                          their own sessions?
+
+  2. SEQUENCE consistency — given a specific importance code (e.g. BCS, IAI),
+                            does the distribution of DA sequences associated
+                            with that code look similar across therapists?
+                            And is a given therapist internally consistent
+                            across their own sessions?
+
+Therapist ID extraction
+-----------------------
+Parsed from the filename: the character(s) immediately before the first
+underscore that follow the letter T.  E.g. "randomT1_session.csv" → "1".
+
+Sequence representation
+-----------------------
+Each important block is represented as the DA sequence within it (no context
+by default; use --context_window N to include ±N DAs around each block).
+The DA distribution within that sequence is the unit of comparison.
+
+Statistical tests
+-----------------
+  - Chi-square test of independence on DA-type count tables:
+      * Between therapists for each code
+      * Within therapist across sessions for each code
+  - Krippendorff's alpha on per-DA-type rates per session, per therapist
+  - Jensen-Shannon divergence as an effect-size complement to chi-square
+    (chi-square p-value tells you significance; JS divergence tells you
+    how different the distributions actually are)
+
+Outputs
+-------
+  {outdir}/rates/
+      important_rates.csv              — per-session important rate
+      rate_summary.csv                 — per-therapist mean/std rate
+      rate_boxplot.png                 — boxplot per therapist
+  {outdir}/codes/
+      code_counts.csv                  — per-therapist per-code block counts
+      code_heatmap.png                 — heatmap of code usage per therapist
+  {outdir}/sequences/{all|therapist_spkr|patient_spkr}/
+      {code}/
+          da_distributions.csv         — per-therapist DA-type counts for this code
+          chi_square_between.csv       — pairwise chi-square between therapists
+          chi_square_within.csv        — per-therapist chi-square across sessions
+          js_divergence.csv            — pairwise JS divergence between therapists
+          js_heatmap_T{n}.png          — per-therapist JS divergence heatmap across codes
+          da_distribution_plot.png     — grouped bar chart per therapist
+  {outdir}/summary.csv                 — top-level summary of all tests
+
+Speaker breakdown
+-----------------
+Sequence analysis is run three times:
+  all           — all DAs within the block regardless of speaker
+  therapist_spkr — only DAs spoken by the therapist within the block
+  patient_spkr   — only DAs spoken by non-therapist speakers within the block
+
+Usage
+-----
+python coding_consistency.py \\
+    --dir /path/to/csv_dir \\
+    --granularity groups \\
+    --target patient \\
+    --context_window 0 \\
+    --outdir coding_consistency_output/
+
+Requires: pandas, numpy, matplotlib, scipy
+Drop alongside analyze_da_patterns.py and path_graph_da.py.
+"""
+
+from __future__ import annotations
 
 import argparse
 import os
@@ -179,6 +251,12 @@ def extract_blocks(
                 da for da, spkr in zip(da_labels[start:end], speakers[start:end])
                 if spkr == "patient"
             ]
+            # Speaker-prefixed tokens: "therapist::CQ", "patient::ST" etc.
+            # Allows ngrams to capture cross-speaker transitions.
+            da_sequence_speaker = [
+                f"{spkr}::{da}"
+                for da, spkr in zip(da_labels[start:end], speakers[start:end])
+            ]
 
             blocks.append({
                 "therapist_id":          rec["therapist_id"],
@@ -187,6 +265,7 @@ def extract_blocks(
                 "da_sequence":           da_sequence,
                 "da_sequence_therapist": da_sequence_therapist,
                 "da_sequence_patient":   da_sequence_patient,
+                "da_sequence_speaker":   da_sequence_speaker,
             })
             i = j
         else:
@@ -1370,6 +1449,773 @@ def _kappa_to_f1_ceiling(kappa: float) -> float:
     return (1.0 + max(0.0, kappa)) / 2.0
 
 
+
+def load_transcripts_both(
+    dir_path:    "Path",
+    granularity: str,
+) -> list[dict]:
+    """
+    Load transcripts with BOTH patient_important and therapist_important columns.
+    Each record has target_col / code_col set to patient (as primary) but also
+    carries both importance arrays for cross-target analysis.
+    Skips files missing either column.
+    """
+    allowed_ext = {".csv", ".tsv", ".xlsx"}
+    records     = []
+
+    for fp in sorted(dir_path.iterdir()):
+        if fp.suffix.lower() not in allowed_ext:
+            continue
+        print(f"Loading {fp.name} (both targets) …")
+        df = load_da_level(fp)
+        df = df[df[DA_COLUMN] != "I-"].reset_index(drop=True)
+
+        if "patient_important" not in df.columns:
+            print(f"  Warning: 'patient_important' not found — skipping.")
+            continue
+        if "therapist_important" not in df.columns:
+            print(f"  Warning: 'therapist_important' not found — skipping.")
+            continue
+
+        df["patient_important"]   = df["patient_important"].fillna(0).astype(int)
+        df["therapist_important"] = df["therapist_important"].fillna(0).astype(int)
+
+        n_pat  = int(df["patient_important"].sum())
+        n_ther = int(df["therapist_important"].sum())
+        n_tot  = len(df)
+        if n_pat == 0 and n_ther == 0:
+            print(f"  No important labels — skipping.")
+            continue
+
+        therapist_id = parse_therapist_id(fp.name)
+        print(f"  therapist={therapist_id}  {n_tot} DAs  "
+              f"patient_imp={n_pat}  therapist_imp={n_ther}")
+
+        records.append({
+            "filename":     fp.name,
+            "therapist_id": therapist_id,
+            "df":           df,
+            "target_col":   "patient_important",
+            "code_col":     "patient_code",
+            "granularity":  granularity,
+        })
+
+    return records
+
+
+def _extract_blocks_for_target(
+    records:        list[dict],
+    target_col:     str,
+    code_col:       str,
+    context_window: int,
+    granularity:    str,
+) -> list[dict]:
+    """
+    Extract important blocks for a specific target column from records
+    that carry both patient and therapist importance.
+    Reuses the existing extract_blocks logic but overrides target_col/code_col.
+    """
+    patched = []
+    for rec in records:
+        if target_col not in rec["df"].columns:
+            continue
+        patched_rec = dict(rec)
+        patched_rec["target_col"] = target_col
+        patched_rec["code_col"]   = code_col
+        patched.append(patched_rec)
+
+    blocks = []
+    for rec in patched:
+        blocks.extend(extract_blocks(rec, context_window))
+    return blocks
+
+
+def analyse_cross_target_ceiling(
+    records:        list[dict],
+    outdir:         str,
+    context_window: int = 0,
+    ngram_ns:       list[int] = (1, 2, 3),
+) -> None:
+    """
+    Cross-target ceiling analysis comparing patient-important vs
+    therapist-important DA sequences.
+
+    TASK A — Are patient-important and therapist-important sequences distinguishable?
+    ---------------------------------------------------------------------------------
+    Computes JS divergence between pooled patient-important DA sequences and
+    pooled therapist-important DA sequences. High JS = the two types of important
+    moments use different DA patterns = a classifier could tell them apart.
+
+    TASK B — Combined importance ceiling
+    -------------------------------------
+    Treats all important DAs (patient OR therapist) as positive, all others as
+    negative, and computes the JS ceiling for this combined task.
+
+    TASK C — Per-code cross-target separability
+    --------------------------------------------
+    For each code that appears in both patient and therapist important blocks,
+    computes JS between patient-labeled and therapist-labeled sequences for
+    that code. Low JS = this code looks the same regardless of who it is
+    attributed to. High JS = the code manifests differently.
+
+    All three tasks run for all three speaker slices (all, therapist_spkr,
+    patient_spkr) and with both frequency and combined ngram JS.
+
+    Outputs
+    -------
+    {outdir}/ceiling/cross_target_ceiling.csv
+    {outdir}/ceiling/cross_target_ceiling.txt
+    """
+    import itertools
+
+    ceiling_dir = os.path.join(outdir, "ceiling")
+    os.makedirs(ceiling_dir, exist_ok=True)
+
+    def _js(a: np.ndarray, b: np.ndarray) -> float:
+        a = a + 1e-10;  b = b + 1e-10
+        a /= a.sum();   b /= b.sum()
+        m  = 0.5 * (a + b)
+        kl = lambda p, q: float(np.sum(p * np.log(p / q)))
+        return 0.5 * kl(a, m) + 0.5 * kl(b, m)
+
+    def _da_counts(seqs: list[list[str]], vocab: list[str]) -> np.ndarray:
+        counts = np.zeros(len(vocab), dtype=float)
+        for seq in seqs:
+            for da in seq:
+                if da in vocab:
+                    counts[vocab.index(da)] += 1
+        return counts
+
+    def _extract_ngrams(seq: list[str], n: int) -> list[tuple]:
+        return [tuple(seq[i:i+n]) for i in range(len(seq) - n + 1)]
+
+    def _ngram_js(seqs_a: list[list[str]], seqs_b: list[list[str]], n: int) -> float:
+        all_ng = sorted({ng for seqs in (seqs_a, seqs_b)
+                         for seq in seqs for ng in _extract_ngrams(seq, n)})
+        if not all_ng:
+            return float("nan")
+        def _vec(seqs, vocab, _n=n):
+            counts = defaultdict(int)
+            for seq in seqs:
+                for ng in _extract_ngrams(seq, _n):
+                    counts[ng] += 1
+            return np.array([counts.get(ng, 0) for ng in vocab], dtype=float)
+        return _js(_vec(seqs_a, all_ng), _vec(seqs_b, all_ng))
+
+    def _combined_ngram_js(seqs_a: list[list[str]], seqs_b: list[list[str]],
+                           ns: list[int]) -> float:
+        vecs_a, vecs_b = [], []
+        for n in ns:
+            all_ng = sorted({ng for seqs in (seqs_a, seqs_b)
+                             for seq in seqs for ng in _extract_ngrams(seq, n)})
+            if not all_ng:
+                continue
+            def _vec(seqs, vocab, _n=n):
+                counts = defaultdict(int)
+                for seq in seqs:
+                    for ng in _extract_ngrams(seq, _n):
+                        counts[ng] += 1
+                return np.array([counts.get(ng, 0) for ng in vocab], dtype=float)
+            vecs_a.append(_vec(seqs_a, all_ng))
+            vecs_b.append(_vec(seqs_b, all_ng))
+        if not vecs_a:
+            return float("nan")
+        va = np.concatenate(vecs_a)
+        vb = np.concatenate(vecs_b)
+        return _js(va, vb)
+
+    def _f1_ceil(js: float) -> float:
+        return (1.0 + max(0.0, js)) / 2.0
+
+    # Extract blocks for each target
+    pat_blocks  = _extract_blocks_for_target(
+        records, "patient_important",   "patient_code",   context_window, records[0]["granularity"]
+    )
+    ther_blocks = _extract_blocks_for_target(
+        records, "therapist_important", "therapist_code",  context_window, records[0]["granularity"]
+    )
+
+    # All unique DA types across both targets
+    all_da = sorted({
+        da for blocks in (pat_blocks, ther_blocks)
+        for b in blocks for da in b["da_sequence"]
+    })
+
+    # Non-important sequences (union: DA is 0 for both patient and therapist)
+    nonim_seqs = []
+    for rec in records:
+        df         = rec["df"]
+        gran       = rec["granularity"]
+        both_nonim = (
+            (df["patient_important"].fillna(0).astype(int) == 0) &
+            (df["therapist_important"].fillna(0).astype(int) == 0)
+        )
+        da_labels = [
+            get_label(row[DA_COLUMN], row["da_group"], gran)
+            for _, row in df.iterrows()
+        ]
+        speakers  = [
+            _normalise_speaker(str(row.get("speaker", "patient")))
+            for _, row in df.iterrows()
+        ]
+        i = 0
+        vals = both_nonim.values
+        while i < len(vals):
+            if vals[i]:
+                j = i
+                while j < len(vals) and vals[j]:
+                    j += 1
+                nonim_seqs.append(da_labels[i:j])
+                i = j
+            else:
+                i += 1
+
+    speaker_slices = [
+        ("da_sequence",           "all"),
+        ("da_sequence_therapist", "therapist_spkr"),
+        ("da_sequence_patient",   "patient_spkr"),
+    ]
+
+    txt  = ["=" * 70,
+            "CROSS-TARGET CEILING ANALYSIS",
+            "Comparing patient-important vs therapist-important DA sequences",
+            "=" * 70, ""]
+    rows = []
+
+    for seq_key, speaker_label in speaker_slices:
+        txt.append("\n" + "─"*70)
+        txt.append(f"  Speaker slice: {speaker_label}")
+        txt.append(f"{'─'*70}")
+
+        pat_seqs  = [b[seq_key] for b in pat_blocks  if b[seq_key]]
+        ther_seqs = [b[seq_key] for b in ther_blocks if b[seq_key]]
+
+        if not pat_seqs or not ther_seqs:
+            txt.append("  Insufficient sequences — skipping.")
+            continue
+
+        # ── TASK A: patient-important vs therapist-important ──────────────────
+        txt.append("\n  TASK A: Patient-important vs Therapist-important")
+
+        va_freq    = _da_counts(pat_seqs,  all_da)
+        vb_freq    = _da_counts(ther_seqs, all_da)
+        js_freq_a  = _js(va_freq.copy(), vb_freq.copy())
+        f1_freq_a  = _f1_ceil(js_freq_a)
+        js_comb_a  = _combined_ngram_js(pat_seqs, ther_seqs, ngram_ns)
+        f1_comb_a  = _f1_ceil(js_comb_a) if np.isfinite(js_comb_a) else float("nan")
+
+        txt.append(
+            f"    n_patient={len(pat_seqs)}  n_therapist={len(ther_seqs)}\n"
+            f"    freq JS={js_freq_a:.4f}  F1_ceil={f1_freq_a:.4f}\n"
+            f"    combined_ngram JS={js_comb_a:.4f}  F1_ceil={f1_comb_a:.4f}"
+            if np.isfinite(js_comb_a) else
+            f"    n_patient={len(pat_seqs)}  n_therapist={len(ther_seqs)}\n"
+            f"    freq JS={js_freq_a:.4f}  F1_ceil={f1_freq_a:.4f}\n"
+            f"    combined_ngram JS=N/A"
+        )
+        rows.append({
+            "task": "A_pat_vs_ther", "speaker": speaker_label,
+            "n_a": len(pat_seqs), "n_b": len(ther_seqs),
+            "label_a": "patient_important", "label_b": "therapist_important",
+            "js_freq": round(js_freq_a, 4),
+            "f1_ceil_freq": round(f1_freq_a, 4),
+            "js_combined_ngram": round(js_comb_a, 4) if np.isfinite(js_comb_a) else None,
+            "f1_ceil_ngram": round(f1_comb_a, 4) if np.isfinite(f1_comb_a) else None,
+        })
+
+        # ── TASK B: combined important vs non-important ───────────────────────
+        txt.append("\n  TASK B: Combined important (patient OR therapist) vs non-important")
+
+        all_imp_seqs = pat_seqs + ther_seqs
+
+        # non-important seqs for this speaker slice
+        nonim_slice: list[list[str]] = []
+        for rec in records:
+            df      = rec["df"]
+            gran    = rec["granularity"]
+            both_0  = (
+                (df["patient_important"].fillna(0).astype(int) == 0) &
+                (df["therapist_important"].fillna(0).astype(int) == 0)
+            )
+            da_lbls  = [get_label(r[DA_COLUMN], r["da_group"], gran)
+                        for _, r in df.iterrows()]
+            spkrs    = [_normalise_speaker(str(r.get("speaker","patient")))
+                        for _, r in df.iterrows()]
+            i = 0
+            vals = both_0.values
+            while i < len(vals):
+                if vals[i]:
+                    j = i
+                    while j < len(vals) and vals[j]:
+                        j += 1
+                    if seq_key == "da_sequence":
+                        nonim_slice.append(da_lbls[i:j])
+                    elif seq_key == "da_sequence_therapist":
+                        nonim_slice.append([
+                            d for d, s in zip(da_lbls[i:j], spkrs[i:j])
+                            if s == "therapist"
+                        ])
+                    else:
+                        nonim_slice.append([
+                            d for d, s in zip(da_lbls[i:j], spkrs[i:j])
+                            if s == "patient"
+                        ])
+                    i = j
+                else:
+                    i += 1
+        nonim_slice = [s for s in nonim_slice if s]
+
+        if all_imp_seqs and nonim_slice:
+            va_b = _da_counts(all_imp_seqs, all_da)
+            vb_b = _da_counts(nonim_slice,  all_da)
+            js_freq_b  = _js(va_b.copy(), vb_b.copy())
+            f1_freq_b  = _f1_ceil(js_freq_b)
+            js_comb_b  = _combined_ngram_js(all_imp_seqs, nonim_slice, ngram_ns)
+            f1_comb_b  = _f1_ceil(js_comb_b) if np.isfinite(js_comb_b) else float("nan")
+            txt.append(
+                f"    n_important={len(all_imp_seqs)}  n_nonimportant={len(nonim_slice)}\n"
+                f"    freq JS={js_freq_b:.4f}  F1_ceil={f1_freq_b:.4f}\n"
+                f"    combined_ngram JS={js_comb_b:.4f}  F1_ceil={f1_comb_b:.4f}"
+                if np.isfinite(js_comb_b) else
+                f"    n_important={len(all_imp_seqs)}  n_nonimportant={len(nonim_slice)}\n"
+                f"    freq JS={js_freq_b:.4f}  F1_ceil={f1_freq_b:.4f}\n"
+                f"    combined_ngram JS=N/A"
+            )
+            rows.append({
+                "task": "B_combined_imp_vs_nonimp", "speaker": speaker_label,
+                "n_a": len(all_imp_seqs), "n_b": len(nonim_slice),
+                "label_a": "combined_important", "label_b": "nonimportant",
+                "js_freq": round(js_freq_b, 4),
+                "f1_ceil_freq": round(f1_freq_b, 4),
+                "js_combined_ngram": round(js_comb_b, 4) if np.isfinite(js_comb_b) else None,
+                "f1_ceil_ngram": round(f1_comb_b, 4) if np.isfinite(f1_comb_b) else None,
+            })
+
+        # ── TASK C: per-code cross-target separability ────────────────────────
+        txt.append("\n  TASK C: Per-code cross-target separability (patient vs therapist labeling)")
+
+        pat_by_code:  dict[str, list] = defaultdict(list)
+        ther_by_code: dict[str, list] = defaultdict(list)
+        for b in pat_blocks:
+            for code in b["codes"]:
+                pat_by_code[code].append(b[seq_key])
+        for b in ther_blocks:
+            for code in b["codes"]:
+                ther_by_code[code].append(b[seq_key])
+
+        shared_codes = sorted(set(pat_by_code) & set(ther_by_code))
+        if not shared_codes:
+            txt.append("    No codes shared between patient and therapist — skipping.")
+        else:
+            for code in shared_codes:
+                ps = [s for s in pat_by_code[code]  if s]
+                ts = [s for s in ther_by_code[code] if s]
+                if not ps or not ts:
+                    continue
+                va_c  = _da_counts(ps, all_da)
+                vb_c  = _da_counts(ts, all_da)
+                js_c  = _js(va_c.copy(), vb_c.copy())
+                f1_c  = _f1_ceil(js_c)
+                js_nc = _combined_ngram_js(ps, ts, ngram_ns)
+                f1_nc = _f1_ceil(js_nc) if np.isfinite(js_nc) else float("nan")
+                js_nc_str = f"{js_nc:.4f}" if np.isfinite(js_nc) else "N/A"
+                f1_nc_str = f"{f1_nc:.4f}" if np.isfinite(f1_nc) else "N/A"
+                txt.append(
+                    f"    {code}: freq_JS={js_c:.4f}  F1_ceil={f1_c:.4f}  "
+                    f"ngram_JS={js_nc_str}  F1_ceil_ngram={f1_nc_str}  "
+                    f"n_pat={len(ps)}  n_ther={len(ts)}"
+                )
+                rows.append({
+                    "task": f"C_code_{code}_pat_vs_ther",
+                    "speaker": speaker_label,
+                    "code": code,
+                    "n_a": len(ps), "n_b": len(ts),
+                    "label_a": f"patient_{code}", "label_b": f"therapist_{code}",
+                    "js_freq": round(js_c, 4),
+                    "f1_ceil_freq": round(f1_c, 4),
+                    "js_combined_ngram": round(js_nc, 4) if np.isfinite(js_nc) else None,
+                    "f1_ceil_ngram": round(f1_nc, 4) if np.isfinite(f1_nc) else None,
+                })
+
+    # ── save ──────────────────────────────────────────────────────────────────
+    txt_path = os.path.join(ceiling_dir, "cross_target_ceiling.txt")
+    with open(txt_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(txt))
+    print(f"  Saved: {txt_path}")
+
+    if rows:
+        csv_path = os.path.join(ceiling_dir, "cross_target_ceiling.csv")
+        pd.DataFrame(rows).to_csv(csv_path, index=False)
+        print(f"  Saved: {csv_path}")
+
+
+
+def analyse_speaker_da_ceiling(
+    all_blocks:   list[dict],
+    records:      list[dict],
+    outdir:       str,
+    ngram_ns:     list[int]        = (4, 5, 6),
+    records_both: list[dict] | None = None,
+) -> None:
+    """
+    Ngram ceiling analysis using speaker-prefixed DA tokens.
+
+    Each DA is represented as "speaker::da_label" (e.g. "therapist::canonical_question",
+    "patient::statement") so that ngrams capture both DA type AND who is speaking,
+    including cross-speaker transitions (e.g. the bigram
+    (therapist::canonical_question, patient::statement) is distinct from
+    (patient::canonical_question, patient::statement)).
+
+    Runs the same three tasks as analyse_extended_ceiling but over this
+    speaker-informed token space:
+
+    TASK 1 — Important vs Non-important
+    TASK 2 — Code discrimination (given important)
+    TASK 3 — Per-code ceiling (code vs all non-code + non-important)
+
+    Only runs over the "all" speaker slice since speaker identity is already
+    baked into the tokens — filtering by speaker first would be redundant.
+
+    Output: {outdir}/ceiling/sda_ceiling.txt
+             (sda = speaker-DA)
+    """
+    ceiling_dir = os.path.join(outdir, "ceiling")
+    os.makedirs(ceiling_dir, exist_ok=True)
+
+    def _js(a: np.ndarray, b: np.ndarray) -> float:
+        a = a + 1e-10;  b = b + 1e-10
+        a /= a.sum();   b /= b.sum()
+        m  = 0.5 * (a + b)
+        kl = lambda p, q: float(np.sum(p * np.log(p / q)))
+        return 0.5 * kl(a, m) + 0.5 * kl(b, m)
+
+    txt = [
+        "SPEAKER-DA (SDA) CEILING ANALYSIS",
+        "=" * 60,
+        "",
+        "Each DA token is prefixed with the speaker identity:",
+        "  'therapist::canonical_question', 'patient::statement', etc.",
+        "Ngrams therefore capture both DA type and speaker, including",
+        "cross-speaker transitions.",
+        "",
+        f"Ngram orders: {list(ngram_ns)}",
+        "",
+    ]
+
+    # Collect speaker-prefixed sequences per therapist (important blocks)
+    imp_by_t:      dict[str, list[list[str]]] = defaultdict(list)
+    imp_by_code_t: dict[str, dict[str, list[list[str]]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
+    for blk in all_blocks:
+        seq = blk.get("da_sequence_speaker", [])
+        if not seq:
+            continue
+        t = blk["therapist_id"]
+        imp_by_t[t].append(seq)
+        for code in blk["codes"]:
+            imp_by_code_t[t][code].append(seq)
+
+    # Non-important speaker-prefixed sequences
+    nonim_seqs: list[list[str]] = []
+    for rec in records:
+        df         = rec["df"]
+        target_col = rec["target_col"]
+        gran       = rec["granularity"]
+        da_labels  = [
+            get_label(row[DA_COLUMN], row["da_group"], gran)
+            for _, row in df.iterrows()
+        ]
+        speakers = [
+            _normalise_speaker(str(row.get("speaker", "patient")))
+            for _, row in df.iterrows()
+        ]
+        importance = df[target_col].values
+        n = len(df)
+        i = 0
+        while i < n:
+            if importance[i] == 0:
+                j = i
+                while j < n and importance[j] == 0:
+                    j += 1
+                seq = [f"{speakers[k]}::{da_labels[k]}" for k in range(i, j)]
+                nonim_seqs.append(seq)
+                i = j
+            else:
+                i += 1
+
+    # All unique SDA tokens
+    all_sda = sorted({
+        tok
+        for seqs in list(imp_by_t.values()) + nonim_seqs
+        for seq in (seqs if isinstance(seqs[0], list) else [seqs])
+        for tok in seq
+    } if imp_by_t else set())
+
+    # Flatten imp sequences for pooled analyses
+    all_imp_seqs  = [s for seqs in imp_by_t.values() for s in seqs]
+    nonim_flat    = nonim_seqs
+
+    pooled_code: dict[str, list[list[str]]] = defaultdict(list)
+    for t_codes in imp_by_code_t.values():
+        for code, seqs in t_codes.items():
+            pooled_code[code].extend(seqs)
+    p_codes = sorted(pooled_code.keys())
+
+    # ── TASK 1: important vs non-important ────────────────────────────────────
+    txt.append("─" * 60)
+    txt.append("TASK 1: Important vs Non-important (SDA tokens)")
+    txt.append("─" * 60)
+
+    if all_imp_seqs and nonim_flat:
+        js_comb  = _combined_ngram_js(all_imp_seqs, nonim_flat, ngram_ns)
+        f1_comb  = _kappa_to_f1_ceiling(js_comb) if np.isfinite(js_comb) else float("nan")
+        ngram_strs = []
+        for n in ngram_ns:
+            js_n = _ngram_js(all_imp_seqs, nonim_flat, n)
+            ngram_strs.append(
+                f"{n}-gram JS={js_n:.3f}" if np.isfinite(js_n) else f"{n}-gram N/A"
+            )
+        txt.append(
+            f"  POOLED:  combined_ngram_JS={js_comb:.4f}  "
+            f"F1_ceil={f1_comb:.4f}  "
+            f"n_imp={len(all_imp_seqs)}  n_nonim={len(nonim_flat)}"
+        )
+        txt.append(f"    per-order: {'  '.join(ngram_strs)}")
+
+        # Per therapist
+        for t in sorted(imp_by_t.keys()):
+            imp_seqs_t = imp_by_t[t]
+            if not imp_seqs_t or not nonim_flat:
+                continue
+            js_t = _combined_ngram_js(imp_seqs_t, nonim_flat, ngram_ns)
+            f1_t = _kappa_to_f1_ceiling(js_t) if np.isfinite(js_t) else float("nan")
+            txt.append(
+                f"  T{t}:  combined_ngram_JS={js_t:.4f}  F1_ceil={f1_t:.4f}  "
+                f"n_imp={len(imp_seqs_t)}"
+            )
+
+    # ── TASK 2: code discrimination ───────────────────────────────────────────
+    txt.append("")
+    txt.append("─" * 60)
+    txt.append("TASK 2: Code Discrimination (SDA tokens)")
+    txt.append("─" * 60)
+
+    if len(p_codes) >= 2:
+        for ca, cb in combinations(p_codes, 2):
+            seqs_a = pooled_code[ca]
+            seqs_b = pooled_code[cb]
+            if not seqs_a or not seqs_b:
+                continue
+            js = _combined_ngram_js(seqs_a, seqs_b, ngram_ns)
+            k  = js if np.isfinite(js) else float("nan")   # Task 2: high JS = distinct = high kappa
+            f1 = _kappa_to_f1_ceiling(k) if np.isfinite(k) else float("nan")
+            txt.append(
+                f"  {ca} vs {cb}:  combined_ngram_JS={js:.4f}  "
+                f"kappa={k:.4f}  F1_ceil={f1:.4f}  "
+                f"n_a={len(seqs_a)}  n_b={len(seqs_b)}"
+            )
+
+    # ── TASK 3: per-code vs all non-code ─────────────────────────────────────
+    txt.append("")
+    txt.append("─" * 60)
+    txt.append("TASK 3: Per-code ceiling (code vs all non-code, SDA tokens)")
+    txt.append("─" * 60)
+
+    for code in p_codes:
+        pos_seqs = pooled_code[code]
+        neg_seqs = [
+            s for other, seqs in pooled_code.items()
+            if other != code for s in seqs
+        ] + nonim_flat
+        if not pos_seqs or not neg_seqs:
+            continue
+        js   = _combined_ngram_js(pos_seqs, neg_seqs, ngram_ns)
+        f1   = _kappa_to_f1_ceiling(js) if np.isfinite(js) else float("nan")
+        ngram_strs = []
+        for n in ngram_ns:
+            js_n = _ngram_js(pos_seqs, neg_seqs, n)
+            ngram_strs.append(
+                f"{n}-gram JS={js_n:.3f}" if np.isfinite(js_n) else f"{n}-gram N/A"
+            )
+        txt.append(
+            f"  {code}:  combined_ngram_JS={js:.4f}  F1_ceil={f1:.4f}  "
+            f"n_pos={len(pos_seqs)}  n_neg={len(neg_seqs)}"
+        )
+        txt.append(f"    per-order: {'  '.join(ngram_strs)}")
+
+    # ── TASK 4: three-way SDA comparison ─────────────────────────────────────
+    if records_both is not None:
+        txt.append("")
+        txt.append("─" * 60)
+        txt.append("TASK 4: Three-way comparison with SDA tokens")
+        txt.append("  patient-important vs therapist-important vs non-important")
+        txt.append("  Speaker identity is baked into each token, so cross-speaker")
+        txt.append("  transitions are captured in the ngrams.")
+        txt.append("─" * 60)
+
+        pat_imp_sda:  list[list[str]] = []
+        ther_imp_sda: list[list[str]] = []
+        nonim_sda:    list[list[str]] = []
+
+        for rec in records_both:
+            df   = rec["df"]
+            gran = rec["granularity"]
+
+            if "patient_important" not in df.columns or                "therapist_important" not in df.columns:
+                continue
+
+            da_labels_r = [
+                get_label(row[DA_COLUMN], row["da_group"], gran)
+                for _, row in df.iterrows()
+            ]
+            speakers_r = [
+                _normalise_speaker(str(row.get("speaker", "patient")))
+                for _, row in df.iterrows()
+            ]
+            # Build SDA tokens: "speaker::da_label"
+            sda_tokens = [
+                f"{spkr}::{da}"
+                for da, spkr in zip(da_labels_r, speakers_r)
+            ]
+
+            pat_imp  = df["patient_important"].fillna(0).astype(int).values
+            ther_imp = df["therapist_important"].fillna(0).astype(int).values
+            n        = len(df)
+
+            # Patient-important blocks
+            i = 0
+            while i < n:
+                if pat_imp[i] == 1:
+                    j = i
+                    while j < n and pat_imp[j] == 1:
+                        j += 1
+                    seq = sda_tokens[i:j]
+                    if seq:
+                        pat_imp_sda.append(seq)
+                    i = j
+                else:
+                    i += 1
+
+            # Therapist-important blocks
+            i = 0
+            while i < n:
+                if ther_imp[i] == 1:
+                    j = i
+                    while j < n and ther_imp[j] == 1:
+                        j += 1
+                    seq = sda_tokens[i:j]
+                    if seq:
+                        ther_imp_sda.append(seq)
+                    i = j
+                else:
+                    i += 1
+
+            # Non-important: both labels == 0
+            both_nonim = (pat_imp == 0) & (ther_imp == 0)
+            i = 0
+            while i < n:
+                if both_nonim[i]:
+                    j = i
+                    while j < n and both_nonim[j]:
+                        j += 1
+                    seq = sda_tokens[i:j]
+                    if seq:
+                        nonim_sda.append(seq)
+                    i = j
+                else:
+                    i += 1
+
+        if pat_imp_sda and ther_imp_sda and nonim_sda:
+            pairs = [
+                ("patient_imp",   "therapist_imp",  pat_imp_sda,  ther_imp_sda),
+                ("patient_imp",   "non_important",  pat_imp_sda,  nonim_sda),
+                ("therapist_imp", "non_important",  ther_imp_sda, nonim_sda),
+            ]
+            for label_a, label_b, seqs_a, seqs_b in pairs:
+                js_comb = _combined_ngram_js(seqs_a, seqs_b, ngram_ns)
+                f1_comb = _kappa_to_f1_ceiling(js_comb) if np.isfinite(js_comb) else float("nan")
+                comb_str = f"{js_comb:.4f}" if np.isfinite(js_comb) else "N/A"
+                f1_str   = f"{f1_comb:.4f}" if np.isfinite(f1_comb) else "N/A"
+                ngram_strs = []
+                for n_ord in ngram_ns:
+                    js_n = _ngram_js(seqs_a, seqs_b, n_ord)
+                    ngram_strs.append(
+                        f"{n_ord}-gram JS={js_n:.3f}" if np.isfinite(js_n)
+                        else f"{n_ord}-gram N/A"
+                    )
+                txt.append(
+                    f"  {label_a} vs {label_b}:  "
+                    f"combined_ngram_JS={comb_str}  F1_ceil={f1_str}  "
+                    f"n_a={len(seqs_a)}  n_b={len(seqs_b)}"
+                )
+                txt.append(f"    per-order: {'  '.join(ngram_strs)}")
+        else:
+            txt.append("  Insufficient data for three-way SDA comparison.")
+
+    # ── dendrogram: code relationships via SDA JS distances ─────────────────
+    if len(p_codes) >= 2:
+        try:
+            from scipy.cluster.hierarchy import linkage, dendrogram
+            from scipy.spatial.distance import squareform
+
+            n_c    = len(p_codes)
+            js_mat = np.zeros((n_c, n_c))
+
+            for i, ca in enumerate(p_codes):
+                for j, cb in enumerate(p_codes):
+                    if i == j:
+                        continue
+                    seqs_a = pooled_code.get(ca, [])
+                    seqs_b = pooled_code.get(cb, [])
+                    if seqs_a and seqs_b:
+                        js = _combined_ngram_js(seqs_a, seqs_b, ngram_ns)
+                        js_mat[i, j] = js if np.isfinite(js) else 0.0
+                    else:
+                        js_mat[i, j] = 0.0
+
+            # Convert JS to distance: low JS = similar = small distance
+            # JS is not symmetric by construction here so symmetrise first
+            dist_mat = (js_mat + js_mat.T) / 2.0
+            np.fill_diagonal(dist_mat, 0.0)
+
+            # Ensure it is a valid condensed distance matrix
+            condensed = squareform(dist_mat, checks=False)
+            Z         = linkage(condensed, method="average")
+
+            fig, ax = plt.subplots(figsize=(max(6, n_c * 1.2), 5))
+            dendrogram(
+                Z,
+                labels=p_codes,
+                ax=ax,
+                leaf_rotation=45,
+                leaf_font_size=10,
+                color_threshold=0.7 * max(Z[:, 2]) if len(Z) else 0,
+            )
+            ax.set_title(
+                "Code similarity dendrogram (SDA ngram JS distance)\n"
+                "Codes closer together have more similar SDA sequence patterns",
+                fontsize=10,
+            )
+            ax.set_ylabel("JS distance (lower = more similar)")
+            ax.grid(True, axis="y", color="lightgrey", linewidth=0.5)
+            plt.tight_layout()
+
+            dend_path = os.path.join(ceiling_dir, "sda_code_dendrogram.png")
+            plt.savefig(dend_path, bbox_inches="tight", dpi=150)
+            plt.close()
+            print(f"  Saved: ceiling/sda_code_dendrogram.png")
+
+        except Exception as e:
+            print(f"  Warning: dendrogram failed — {e}")
+
+    # ── save ──────────────────────────────────────────────────────────────────
+    out_path = os.path.join(ceiling_dir, "sda_ceiling.txt")
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(txt))
+    print(f"  Saved: ceiling/sda_ceiling.txt")
+
+
 def analyse_performance_ceiling(
     all_blocks:  list[dict],
     outdir:      str,
@@ -1731,14 +2577,16 @@ def extract_nonimportant_windows_by_speaker(
 # ── extended ceiling: important vs non-important + code discrimination ────────
 
 def analyse_extended_ceiling(
-    all_blocks:   list[dict],
-    records:      list[dict],
-    outdir:       str,
-    window_size:  int | None = None,
-    ngram_ns:     list[int]  = (1, 2, 3),
+    all_blocks:    list[dict],
+    records:       list[dict],
+    outdir:        str,
+    window_size:   int | None  = None,
+    ngram_ns:      list[int]   = (1, 2, 3),
+    records_both:  list[dict] | None = None,
 ) -> None:
     """
-    Two additional ceiling estimates:
+    Two additional ceiling estimates, plus optional three-way comparison
+    between patient-important, therapist-important, and non-important:
 
     TASK 1 — Important vs Non-important classification
     ---------------------------------------------------
@@ -1798,6 +2646,10 @@ def analyse_extended_ceiling(
             "TASK 2: Code discrimination (given important)",
             "  JS = how separable codes are from each other.",
             "  High mean pairwise JS -> codes are distinct -> higher ceiling.",
+            "",
+            "TASK 4: Three-way comparison (patient-important vs therapist-important vs non-important)",
+            "  Pairwise JS between all three classes.",
+            "  Only computed when --both_targets is passed.",
             ""]
 
     imp_rows  = []   # task 1
@@ -1949,13 +2801,13 @@ def analyse_extended_ceiling(
                     "speaker": speaker_label, "therapist": t, "pooled": False,
                     "code_a": ca, "code_b": cb,
                     "js": round(js,4),
-                    "kappa": round(_js_to_kappa(js),4),
-                    "f1_ceiling": round(_kappa_to_f1_ceiling(_js_to_kappa(js)),4),
+                    "kappa": round(js,4),   # Task 2: high JS = distinct = high kappa
+                    "f1_ceiling": round(_kappa_to_f1_ceiling(js),4),
                     "n_a": len(imp_by_code_t[t][ca]),
                     "n_b": len(imp_by_code_t[t][cb]),
                 })
             mean_js = float(np.mean(js_vals))
-            mean_k  = _js_to_kappa(mean_js)
+            mean_k  = mean_js   # Task 2: high JS = distinct = high kappa
             mean_f1 = _kappa_to_f1_ceiling(mean_k)
             txt.append(
                 f"  T{t}:  mean JS={mean_js:.3f}  kappa={mean_k:.3f}"
@@ -1984,13 +2836,13 @@ def analyse_extended_ceiling(
                     "speaker": speaker_label, "therapist": "pooled", "pooled": True,
                     "code_a": ca, "code_b": cb,
                     "js": round(js,4),
-                    "kappa": round(_js_to_kappa(js),4),
-                    "f1_ceiling": round(_kappa_to_f1_ceiling(_js_to_kappa(js)),4),
+                    "kappa": round(js,4),   # Task 2: high JS = distinct = high kappa
+                    "f1_ceiling": round(_kappa_to_f1_ceiling(js),4),
                     "n_a": len(pooled_code[ca]),
                     "n_b": len(pooled_code[cb]),
                 })
             mean_js = float(np.mean(js_vals))
-            mean_k  = _js_to_kappa(mean_js)
+            mean_k  = mean_js   # Task 2: high JS = distinct = high kappa
             mean_f1 = _kappa_to_f1_ceiling(mean_k)
             txt.append(
                 f"\n  POOLED:  mean JS={mean_js:.3f}  kappa={mean_k:.3f}"
@@ -2072,6 +2924,148 @@ def analyse_extended_ceiling(
         if code_ceil_rows:
             disc_rows.extend([{**r, "comparison": "code_vs_noncode"}
                                for r in code_ceil_rows])
+
+    # ── TASK 4: three-way comparison (patient vs therapist vs non-important) ──
+    if records_both is not None:
+        txt.append(f"\n{'='*60}")
+        txt.append("TASK 4: Three-way comparison — patient-important vs "
+                   "therapist-important vs non-important")
+        txt.append("=" * 60)
+        txt.append(
+            "  Pairwise JS between all three classes (pooled across therapists).\n"
+            "  High JS between patient-imp and therapist-imp = the two types\n"
+            "  of important moments are DA-distinguishable.\n"
+            "  High JS vs non-important = class is separable from background.\n"
+        )
+
+        for seq_key, speaker_label in speaker_slices:
+            txt.append(f"\n  [{speaker_label}]")
+
+            # Collect patient-important and therapist-important sequences
+            # from records_both which carries both columns
+            pat_imp_seqs:  list[list[str]] = []
+            ther_imp_seqs: list[list[str]] = []
+            nonim_3way:    list[list[str]] = []
+
+            for rec in records_both:
+                df   = rec["df"]
+                gran = rec["granularity"]
+                da_labels = [
+                    get_label(row[DA_COLUMN], row["da_group"], gran)
+                    for _, row in df.iterrows()
+                ]
+                speakers_rec = [
+                    _normalise_speaker(str(row.get("speaker", "patient")))
+                    for _, row in df.iterrows()
+                ]
+
+                if "patient_important" not in df.columns or                    "therapist_important" not in df.columns:
+                    continue
+
+                pat_imp  = df["patient_important"].fillna(0).astype(int).values
+                ther_imp = df["therapist_important"].fillna(0).astype(int).values
+                n        = len(df)
+
+                def _seq_slice(start, end):
+                    if seq_key == "da_sequence":
+                        return da_labels[start:end]
+                    elif seq_key == "da_sequence_therapist":
+                        return [da for da, sp in zip(da_labels[start:end],
+                                                      speakers_rec[start:end])
+                                if sp == "therapist"]
+                    else:
+                        return [da for da, sp in zip(da_labels[start:end],
+                                                      speakers_rec[start:end])
+                                if sp == "patient"]
+
+                # Patient-important blocks
+                i = 0
+                while i < n:
+                    if pat_imp[i] == 1:
+                        j = i
+                        while j < n and pat_imp[j] == 1:
+                            j += 1
+                        s = _seq_slice(i, j)
+                        if s:
+                            pat_imp_seqs.append(s)
+                        i = j
+                    else:
+                        i += 1
+
+                # Therapist-important blocks
+                i = 0
+                while i < n:
+                    if ther_imp[i] == 1:
+                        j = i
+                        while j < n and ther_imp[j] == 1:
+                            j += 1
+                        s = _seq_slice(i, j)
+                        if s:
+                            ther_imp_seqs.append(s)
+                        i = j
+                    else:
+                        i += 1
+
+                # Non-important: both patient and therapist label = 0
+                both_nonim = (pat_imp == 0) & (ther_imp == 0)
+                i = 0
+                while i < n:
+                    if both_nonim[i]:
+                        j = i
+                        while j < n and both_nonim[j]:
+                            j += 1
+                        s = _seq_slice(i, j)
+                        if s:
+                            nonim_3way.append(s)
+                        i = j
+                    else:
+                        i += 1
+
+            if not pat_imp_seqs or not ther_imp_seqs or not nonim_3way:
+                txt.append("    Insufficient data for this speaker slice.")
+                continue
+
+            # Build combined DA vocab for frequency JS
+            all_da_3 = sorted({
+                da for seqs in (pat_imp_seqs, ther_imp_seqs, nonim_3way)
+                for seq in seqs for da in seq
+            })
+
+            pairs = [
+                ("patient_imp",    "therapist_imp",  pat_imp_seqs,  ther_imp_seqs),
+                ("patient_imp",    "non_important",  pat_imp_seqs,  nonim_3way),
+                ("therapist_imp",  "non_important",  ther_imp_seqs, nonim_3way),
+            ]
+
+            for label_a, label_b, seqs_a, seqs_b in pairs:
+                va_freq    = _da_counts(seqs_a, all_da_3)
+                vb_freq    = _da_counts(seqs_b, all_da_3)
+                js_freq    = _js(va_freq.copy(), vb_freq.copy())
+                f1_freq    = _kappa_to_f1_ceiling(js_freq)
+                js_comb    = _combined_ngram_js(seqs_a, seqs_b, ngram_ns)
+                f1_comb    = (_kappa_to_f1_ceiling(js_comb)
+                              if np.isfinite(js_comb) else float("nan"))
+                comb_str   = f"{js_comb:.4f}" if np.isfinite(js_comb) else "N/A"
+                f1c_str    = f"{f1_comb:.4f}" if np.isfinite(f1_comb) else "N/A"
+                txt.append(
+                    f"    {label_a} vs {label_b}:  "
+                    f"freq_JS={js_freq:.4f}  F1_ceil={f1_freq:.4f}  "
+                    f"ngram_JS={comb_str}  F1_ceil_ngram={f1c_str}  "
+                    f"n_a={len(seqs_a)}  n_b={len(seqs_b)}"
+                )
+                imp_rows.append({
+                    "speaker":    speaker_label,
+                    "therapist":  "pooled",
+                    "pooled":     True,
+                    "comparison": f"{label_a}_vs_{label_b}",
+                    "js":         round(js_freq, 4),
+                    "kappa":      round(js_freq, 4),
+                    "f1_ceiling": round(f1_freq, 4),
+                    "js_combined_ngram":    round(js_comb, 4) if np.isfinite(js_comb) else None,
+                    "f1_ceiling_ngram":     round(f1_comb, 4) if np.isfinite(f1_comb) else None,
+                    "n_important":    len(seqs_a),
+                    "n_nonimportant": len(seqs_b),
+                })
 
     # ── save outputs ──────────────────────────────────────────────────────────
     if imp_rows:
@@ -2296,6 +3290,10 @@ def main():
     parser.add_argument("--target",         default="patient",
                         choices=["patient", "therapist"],
                         help="Which importance column to analyse (default: patient).")
+    parser.add_argument("--both_targets",   action="store_true",
+                        help="Run cross-target analysis comparing patient-important "
+                             "vs therapist-important sequences. Requires both columns "
+                             "to be present. Runs in addition to the standard analysis.")
     parser.add_argument("--context_window", type=int, default=0,
                         help="DAs of context to include around each important block "
                              "when building DA sequences.  0 = block only (default).")
@@ -2309,7 +3307,7 @@ def main():
     parser.add_argument("--js_disagree",   type=float, default=0.5,
                         help="JS divergence above which therapists disagree "
                              "(default: 0.5).")
-    parser.add_argument("--ngram_ns",      type=str,   default="4,5,6,7,8,9,10,11,12,13",
+    parser.add_argument("--ngram_ns",      type=str,   default="3,4,5,6,7,8,9,10,11,12,13,14",
                         help="Comma-separated n-gram sizes for sequence "
                              "consistency analysis (default: 1,2,3).")
     parser.add_argument("--window_size",   type=int,   default=0,
@@ -2410,12 +3408,18 @@ def main():
     print(f"\n{'─'*60}")
     print("  EXTENDED CEILING ANALYSIS")
     print(f"{'─'*60}")
+    # Load both targets for three-way comparison if --both_targets passed
+    records_both_ext = None
+    if args.both_targets:
+        records_both_ext = load_transcripts_both(dir_path, args.granularity)
+
     analyse_extended_ceiling(
         all_blocks=all_blocks,
         records=records,
         outdir=args.outdir,
         window_size=args.window_size if args.window_size > 0 else None,
         ngram_ns=ngram_ns,
+        records_both=records_both_ext,
     )
 
     # ── labeling narrative ───────────────────────────────────────────────────
@@ -2451,6 +3455,34 @@ def main():
                  "chi2", "p_value", "js_divergence", "n_a", "n_b"]
             ].to_string(index=False)
         )
+
+    if args.both_targets:
+        print(f"\n{'─'*60}")
+        print("  CROSS-TARGET CEILING ANALYSIS")
+        print(f"{'─'*60}")
+        records_both = load_transcripts_both(dir_path, args.granularity)
+        if len(records_both) >= 2:
+            ngram_ns = [int(s.strip()) for s in args.ngram_ns.split(",") if s.strip()]
+            analyse_cross_target_ceiling(
+                records_both,
+                args.outdir,
+                context_window=args.context_window,
+                ngram_ns=ngram_ns,
+            )
+        else:
+            print("  Warning: fewer than 2 transcripts with both targets — skipping.")
+
+    # ── speaker-DA ceiling ───────────────────────────────────────────────────
+    print(f"\n{'─'*60}")
+    print("  SPEAKER-DA CEILING ANALYSIS")
+    print(f"{'─'*60}")
+    analyse_speaker_da_ceiling(
+        all_blocks=all_blocks,
+        records=records,
+        outdir=args.outdir,
+        ngram_ns=ngram_ns,
+        records_both=records_both_ext,
+    )
 
     print(f"\nDone. Outputs in: {args.outdir}")
 

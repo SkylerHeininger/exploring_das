@@ -375,6 +375,7 @@ SYSTEM_PROMPT = (
     "single TARGET DA marked with >>>. "
     "Most DAs are NOT important, only classify as important if the content "
     "is clinically or therapeutically significant based on the examples shown. "
+    "Most regions of important and not important are contiguous and long. "
     "Answer with exactly one of: 'important' or 'not important'. "
     "Do not explain your answer."
 )
