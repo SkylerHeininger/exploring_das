@@ -10,6 +10,8 @@ Usage:
         --transcript path/to/transcript.csv \
         --output_dir path/to/output/ \
         --col_with_text spoken_text
+
+For now, this uses the path for a file, but this may need to be changed depending on whatever we are using.
 """
 
 import os
@@ -26,7 +28,7 @@ from datasets import Dataset
 device = 0 if torch.cuda.is_available() else -1
 print(f"Using device: {'GPU' if device == 0 else 'CPU'}", flush=True)
 
-pipe      = pipeline("token-classification",
+pipe = pipeline("token-classification",
                      model="pzelasko/longformer-swda-nolower",
                      device=device)
 tokenizer = AutoTokenizer.from_pretrained("pzelasko/longformer-swda-nolower")
@@ -43,7 +45,7 @@ def concatenate_words_to_length(words, max_length=512):
     if IGNORE_MAX_LENGTH:
         return [" ".join(map(str, words))]
 
-    windows        = []
+    windows = []
     current_window = []
     current_length = 0
 
@@ -67,10 +69,10 @@ def concatenate_words_to_length(words, max_length=512):
 def scrub_word(word):
     """Remove non-ASCII and other characters that crash daseg."""
     chars_to_remove = ['Ä', 'Ġ', ' ', 'Š', '\n']
-    original_word   = str(word).replace("â€", '')
-    original_word   = original_word.replace('ÄŠ', '')
-    original_word   = original_word.replace('Ä\x8a', '')
-    original_word   = re.sub(r'[^\x00-\x7F]+', '', original_word)
+    original_word = str(word).replace("â€", '')
+    original_word = original_word.replace('ÄŠ', '')
+    original_word = original_word.replace('Ä\x8a', '')
+    original_word = re.sub(r'[^\x00-\x7F]+', '', original_word)
     return ''.join(char for char in original_word if char not in chars_to_remove)
 
 
@@ -83,7 +85,7 @@ def clean_prediction(prediction, chars_to_remove=None):
     original_word = str(original_word).replace("â€", '')
     original_word = original_word.replace('ÄŠ', '')
     original_word = original_word.replace('Ä\x8a', '')
-    cleaned_word  = ''.join(
+    cleaned_word = ''.join(
         char for char in original_word if char not in chars_to_remove
     )
     prediction['word'] = cleaned_word
@@ -103,16 +105,16 @@ def align_predictions_with_words_using_word_endings(words, predictions):
     print(f"Total tokens to align: {len(complete_predictions)}", flush=True)
 
     aligned_predictions = []
-    prediction_index    = 0
-    num_predictions     = len(complete_predictions)
+    prediction_index = 0
+    num_predictions = len(complete_predictions)
 
     for word in words:
-        word             = str(word)
+        word = str(word)
         word_predictions = []
-        cleaned_word     = scrub_word(word)
+        cleaned_word = scrub_word(word)
 
         while prediction_index < num_predictions:
-            prediction             = complete_predictions[prediction_index]
+            prediction = complete_predictions[prediction_index]
             prediction, cleaned_pred = clean_prediction(prediction)
 
             if not cleaned_pred:
@@ -181,36 +183,36 @@ def process_file(file_path, output_dir, col_with_text):
     words = [scrub_word(str(w)) for w in data_word_level[col_with_text]]
 
     if not words:
-        print(f"  No words found in {file_path} — skipping.", flush=True)
+        print(f"No words found in {file_path} — skipping.", flush=True)
         return
 
     windows = concatenate_words_to_length(words)
     windows = [w for w in windows if w and w.strip()]
 
     if not windows:
-        print(f"  No windows produced — skipping.", flush=True)
+        print(f"No windows produced — skipping.", flush=True)
         return
 
-    print(f"  {len(words)} words  →  {len(windows)} windows", flush=True)
+    print(f"{len(words)} words  →  {len(windows)} windows", flush=True)
 
-    dataset     = Dataset.from_dict({col_with_text: windows})
+    dataset = Dataset.from_dict({col_with_text: windows})
     predictions = pipe(list(dataset[col_with_text]), batch_size=16)
 
     word_predictions = align_predictions_with_words_using_word_endings(
         words, predictions
     )
-    print(f"  Aligned {len(word_predictions)} words", flush=True)
+    print(f"Aligned {len(word_predictions)} words", flush=True)
 
-    entities       = []
-    raw_entities   = []
-    scores         = []
-    raw_scores     = []
-    words_pred     = []
-    chunks         = []
+    entities = []
+    raw_entities = []
+    scores = []
+    raw_scores = []
+    words_pred = []
+    chunks = []
 
-    chunk_index        = 0
+    chunk_index = 0
     previous_raw_label = "I-"
-    temp_predictions   = []
+    temp_predictions = []
 
     for pred_list in word_predictions:
         if pred_list is None:
@@ -220,9 +222,9 @@ def process_file(file_path, output_dir, col_with_text):
                 lst.append("")
             continue
 
-        pred   = pred_list[0]
+        pred = pred_list[0]
         entity = pred['entity']
-        score  = pred['score']
+        score = pred['score']
 
         temp_word = ''.join(p['word'] for p in pred_list)
         temp_predictions.append({
@@ -241,7 +243,7 @@ def process_file(file_path, output_dir, col_with_text):
             for tp in temp_predictions:
                 if tp['entity'] == 'I-':
                     tp['entity'] = entity
-                    tp['score']  = score
+                    tp['score'] = score
 
             for tp in temp_predictions:
                 entities.append(tp['entity'])
@@ -264,18 +266,18 @@ def process_file(file_path, output_dir, col_with_text):
         chunks.append(chunk_index)
         words_pred.append(tp['word'])
 
-    data_word_level['Pred_DA']         = pad_list_to_dataframe_length(data_word_level, raw_entities)
-    data_word_level['Raw_Score']       = pad_list_to_dataframe_length(data_word_level, raw_scores)
-    data_word_level['Proc_DA']         = pad_list_to_dataframe_length(data_word_level, entities)
-    data_word_level['Score']           = pad_list_to_dataframe_length(data_word_level, scores)
+    data_word_level['Pred_DA'] = pad_list_to_dataframe_length(data_word_level, raw_entities)
+    data_word_level['Raw_Score'] = pad_list_to_dataframe_length(data_word_level, raw_scores)
+    data_word_level['Proc_DA'] = pad_list_to_dataframe_length(data_word_level, entities)
+    data_word_level['Score'] = pad_list_to_dataframe_length(data_word_level, scores)
     data_word_level['Words_Prediction']= pad_list_to_dataframe_length(data_word_level, words_pred)
-    data_word_level['DA_number']       = pad_list_to_dataframe_length(data_word_level, chunks)
+    data_word_level['DA_number'] = pad_list_to_dataframe_length(data_word_level, chunks)
 
     none_count = sum(1 for p in word_predictions if p is None)
     print(f"  None predictions: {none_count}", flush=True)
 
-    stem          = os.path.splitext(os.path.basename(file_path))[0]
-    output_path   = os.path.join(output_dir, f"{stem}_with_predictions.csv")
+    stem = os.path.splitext(os.path.basename(file_path))[0]
+    output_path = os.path.join(output_dir, f"{stem}_with_predictions.csv")
     data_word_level.to_csv(output_path, index=False)
     print(f"  Saved: {output_path}", flush=True)
 
@@ -284,9 +286,9 @@ def main():
     parser = argparse.ArgumentParser(
         description="Run daseg on a single transcript file."
     )
-    parser.add_argument("--transcript",    required=True,
+    parser.add_argument("--transcript", required=True,
                         help="Path to the transcript file (CSV, TSV, or XLSX).")
-    parser.add_argument("--output_dir",    default="daseg_output/",
+    parser.add_argument("--output_dir", default="daseg_output/",
                         help="Directory to write the output CSV. (default: daseg_output/)")
     parser.add_argument("--col_with_text", required=True,
                         help="Column in the transcript file containing spoken text.")
