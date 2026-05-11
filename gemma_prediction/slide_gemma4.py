@@ -375,13 +375,181 @@ def build_system_prompt(
 
     lines += [
         "",
+        "Important moments are specific, intentional therapeutic acts — a "
+        "deliberate intervention, a focused exchange, or a distinct shift in "
+        "the conversation. The mere presence of a relevant topic does NOT make "
+        "a window important. Most discussion of relevant topics is background "
+        "conversation and NOT important. Only windows where something specific "
+        "and purposeful is happening should be classified as important.",
+        "",
         f"BASE RATE: In a typical therapy session, approximately "
         f"{base_rate*100:.0f}% of dialogue act windows are important. "
         f"The vast majority of windows are NOT important.",
         "",
         "CLASSIFICATION RULES:",
-        "  - Classify as 'important' ONLY if the window clearly contains "
-        "content matching one of the codes above.",
+        "  - Classify as 'important' ONLY if the window contains a specific, "
+        "purposeful act matching one of the codes above — not merely a topic "
+        "that relates to one of the codes.",
+        "  - If you are unsure, classify as 'not important'.",
+        "  - Routine conversation, logistics, and filler content are "
+        "almost always 'not important'.",
+        "  - When in doubt, answer 'not important'.",
+        "",
+        "Answer with exactly one of: 'important' or 'not important'.",
+        "Do not explain your answer.",
+    ]
+
+    return "\n".join(lines)
+
+
+SUMMARY_SYSTEM_PROMPT = (
+    "You are a neutral observer summarising a therapy session transcript. "
+    "Your task is to describe what happened in the session factually and "
+    "objectively. Do NOT indicate what was or was not clinically important. "
+    "Do NOT use language that suggests significance, breakthroughs, or key "
+    "moments. Simply describe the session as it unfolded."
+)
+
+SUMMARY_USER_PROMPT = (
+    "Please summarise the following therapy session transcript in two short "
+    "paragraphs:\n"
+    "TOPICS: The main subjects and themes discussed during the session "
+    "(2-3 sentences).\n"
+    "ARC: How the conversation developed and shifted over time "
+    "(2-3 sentences).\n"
+    "Be neutral and factual. Do not comment on clinical significance. "
+    "Do not say anything is important or meaningful."
+)
+
+
+def build_transcript_text(rec: dict, max_das: int = 500) -> str:
+    """
+    Render a transcript record as plain text for the summary LLM.
+    Truncated to max_das DAs to keep the summary call within token limits.
+    Shows speaker, DA type, and text — no labels.
+    """
+    das      = rec["das"]
+    texts    = rec["texts"]
+    speakers = rec["speakers"]
+    n        = min(len(das), max_das)
+
+    lines = []
+    for i in range(n):
+        lines.append(f"{speakers[i].capitalize()}: [{das[i]}] \"{texts[i]}\"")
+
+    if len(rec["das"]) > max_das:
+        lines.append(f"... [{len(rec['das']) - max_das} further DAs not shown]")
+
+    return "\n".join(lines)
+
+
+def generate_transcript_summary(
+    rec:                 dict,
+    fname:               str,
+    model_and_processor: tuple,
+    summaries_dir:       str,
+    max_das:             int = 500,
+    max_tokens:          int = 400,
+) -> str:
+    """
+    Generate a neutral factual summary of a transcript using the same model
+    as the importance classifier.
+
+    The summary is saved to {summaries_dir}/{fname_stem}_summary.txt so it
+    can be inspected and is not recomputed on reruns if the file exists.
+
+    Returns the summary string.
+    """
+    os.makedirs(summaries_dir, exist_ok=True)
+    stem         = Path(fname).stem
+    summary_path = os.path.join(summaries_dir, f"{stem}_summary.txt")
+
+    # Return cached summary if it exists
+    if os.path.exists(summary_path):
+        with open(summary_path, "r", encoding="utf-8") as f:
+            summary = f.read().strip()
+        print(f"    Summary loaded from cache: {summary_path}", flush=True)
+        return summary
+
+    transcript_text = build_transcript_text(rec, max_das=max_das)
+    user_content    = f"{SUMMARY_USER_PROMPT}\n\n{transcript_text}"
+
+    print(f"    Generating summary for {fname} …", flush=True)
+    summary = generate_prediction(
+        prompt               = user_content,
+        system               = SUMMARY_SYSTEM_PROMPT,
+        model_and_processor  = model_and_processor,
+        temperature          = 0.0,
+        max_tokens           = max_tokens,
+    )
+
+    # Save to disk
+    with open(summary_path, "w", encoding="utf-8") as f:
+        f.write(f"Transcript: {fname}\n")
+        f.write("=" * 60 + "\n\n")
+        f.write(summary)
+    print(f"    Summary saved: {summary_path}", flush=True)
+
+    return summary
+
+
+def build_system_prompt_with_summary(
+    codebook:  dict[str, str],
+    base_rate: float,
+    summary:   str,
+) -> str:
+    """
+    Build the per-transcript system prompt, incorporating the neutral
+    transcript summary before the base rate and classification rules.
+    The summary gives the model context about the session arc and topics
+    without priming it to label specific content as important.
+    """
+    lines = [
+        "You are an expert behavioral psychologist analysing therapy session "
+        "transcripts. You will be shown labeled examples of dialogue act windows, "
+        "then a new unlabeled window to classify.",
+        "",
+        "IMPORTANT MOMENTS are defined as windows containing dialogue that is "
+        "clinically or therapeutically significant. They are characterised by "
+        "one or more of the following codes:",
+        "",
+    ]
+
+    if codebook:
+        for abbrev, comment in codebook.items():
+            lines.append(f"  {abbrev}: {comment}")
+    else:
+        lines.append("  (No codebook provided — use clinical judgment.)")
+
+    lines += [
+        "",
+        "SESSION OVERVIEW:",
+        "The following is a neutral factual summary of the session you are "
+        "classifying. Use it to understand the overall context, but do NOT "
+        "use it to decide what is important — most of the session is not "
+        "important regardless of the topics discussed.",
+        "",
+    ]
+    for line in summary.splitlines():
+        lines.append(f"  {line}")
+
+    lines += [
+        "",
+        "Important moments are specific, intentional therapeutic acts — a "
+        "deliberate intervention, a focused exchange, or a distinct shift in "
+        "the conversation. The mere presence of a relevant topic does NOT make "
+        "a window important. Most discussion of relevant topics is background "
+        "conversation and NOT important. Only windows where something specific "
+        "and purposeful is happening should be classified as important.",
+        "",
+        f"BASE RATE: In a typical therapy session, approximately "
+        f"{base_rate*100:.0f}% of dialogue act windows are important. "
+        f"The vast majority of windows are NOT important.",
+        "",
+        "CLASSIFICATION RULES:",
+        "  - Classify as 'important' ONLY if the window contains a specific, "
+        "purposeful act matching one of the codes above — not merely a topic "
+        "that relates to one of the codes.",
         "  - If you are unsure, classify as 'not important'.",
         "  - Routine conversation, logistics, and filler content are "
         "almost always 'not important'.",
@@ -446,7 +614,7 @@ def construct_prompt(
         return "\n".join(lines)
 
     # Token-aware: fit as many examples as possible
-    tok         = processor.tokenizer if hasattr(processor, "tokenizer") else processor
+    tok         = _get_tokenizer(processor)
     tail_tokens = len(tok.encode(tail))
     hdr_tokens  = len(tok.encode(header))
     budget      = max_input_tokens - tail_tokens - hdr_tokens
@@ -480,17 +648,30 @@ def apply_min_run_filter(
     preds:           list[int],
     min_important:   int,
     min_unimportant: int,
+    filter_order:    str = "unimportant_first",
 ) -> list[int]:
     """
     Post-processing: remove short runs by flipping them to their neighbours.
 
     Any contiguous run of 1s shorter than min_important is set to 0.
     Any contiguous run of 0s shorter than min_unimportant is set to 1.
-    Applied in that order (important first, then unimportant).
+
+    filter_order controls which pass runs first:
+      "unimportant_first" (default): fill short non-important gaps first,
+        then remove short isolated important runs. Best when the main issue
+        is small holes within contiguous important regions (e.g. segmentation
+        model leaving single-DA gaps inside a run).
+      "important_first": remove short important bursts first, then fill gaps.
+        Better when the main issue is isolated false-positive spikes.
     """
     result = list(preds)
 
-    for target, min_len in [(1, min_important), (0, min_unimportant)]:
+    if filter_order == "unimportant_first":
+        passes = [(0, min_unimportant), (1, min_important)]
+    else:
+        passes = [(1, min_important), (0, min_unimportant)]
+
+    for target, min_len in passes:
         i = 0
         while i < len(result):
             if result[i] == target:
@@ -511,13 +692,49 @@ def apply_min_run_filter(
 
 # ── model loading ─────────────────────────────────────────────────────────────
 
+def _is_multimodal(model_id: str) -> bool:
+    """
+    Returns True if the model should be loaded with AutoModelForImageTextToText
+    + AutoProcessor (multimodal). Returns False for text-only models which use
+    AutoModelForCausalLM + AutoTokenizer.
+
+    Gemma 4 E2B and E4B are multimodal (image+audio).
+    Gemma 4 26B-A4B and 31B are text-only.
+    All other models default to text-only (CausalLM).
+    """
+    mid = model_id.lower()
+    # Gemma 4 small multimodal variants
+    if re.search(r"gemma.4.e[24]b", mid):
+        return True
+    # Everything else: text-only
+    return False
+
+
+def _get_tokenizer(processor):
+    """
+    Return a tokenizer-like object from either an AutoProcessor
+    (multimodal — has .tokenizer attribute) or an AutoTokenizer
+    (text-only — is already a tokenizer).
+    """
+    return processor.tokenizer if hasattr(processor, "tokenizer") else processor
+
+
 def load_model(model_id: str, hf_cache_dir: str | None = None):
     """
-    Load AutoModelForImageTextToText + AutoProcessor.
-    Returns (model, processor) tuple.
+    Load model + tokenizer/processor. Returns (model, processor) tuple.
+
+    Multimodal models (Gemma 4 E2B/E4B):
+        AutoModelForImageTextToText + AutoProcessor
+
+    Text-only models (Gemma 4 26B-A4B, 31B, Qwen, Llama, etc.):
+        AutoModelForCausalLM + AutoTokenizer
+
+    Both return the same (model, processor) interface — downstream code
+    uses _get_tokenizer(processor) to get the tokenizer in either case,
+    and apply_chat_template is available on both AutoProcessor and
+    AutoTokenizer.
     """
     import torch
-    from transformers import AutoProcessor, AutoModelForImageTextToText
 
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
@@ -527,15 +744,30 @@ def load_model(model_id: str, hf_cache_dir: str | None = None):
         os.environ["HF_DATASETS_CACHE"]  = hf_cache_dir
         print(f"HuggingFace cache dir: {hf_cache_dir}", flush=True)
 
-    print(f"Loading processor: {model_id} …", flush=True)
-    processor = AutoProcessor.from_pretrained(model_id)
+    multimodal = _is_multimodal(model_id)
+    print(f"Model type: {'multimodal (ImageTextToText)' if multimodal else 'text-only (CausalLM)'}",
+          flush=True)
 
-    print(f"Loading model: {model_id} in float16 …", flush=True)
-    model = AutoModelForImageTextToText.from_pretrained(
-        model_id,
-        torch_dtype=torch.float16,
-        device_map="auto",
-    ).eval()
+    if multimodal:
+        from transformers import AutoProcessor, AutoModelForImageTextToText
+        print(f"Loading processor: {model_id} …", flush=True)
+        processor = AutoProcessor.from_pretrained(model_id)
+        print(f"Loading model: {model_id} in float16 …", flush=True)
+        model = AutoModelForImageTextToText.from_pretrained(
+            model_id,
+            torch_dtype=torch.float16,
+            device_map="auto",
+        ).eval()
+    else:
+        from transformers import AutoTokenizer, AutoModelForCausalLM
+        print(f"Loading tokenizer: {model_id} …", flush=True)
+        processor = AutoTokenizer.from_pretrained(model_id)
+        print(f"Loading model: {model_id} in float16 …", flush=True)
+        model = AutoModelForCausalLM.from_pretrained(
+            model_id,
+            torch_dtype=torch.float16,
+            device_map="auto",
+        ).eval()
 
     device = next(model.parameters()).device
     print(f"Model loaded on device: {device}", flush=True)
@@ -560,25 +792,42 @@ def generate_prediction(
     retry_note:          str   = "",
     max_input_tokens:    int   = 0,
 ) -> str:
-    """Run inference. retry_note appended on retry attempts."""
+    """
+    Run inference. Works with both multimodal (AutoProcessor) and
+    text-only (AutoTokenizer) models.
+
+    For multimodal models, content is wrapped as typed dicts
+    ({type: text, text: ...}) as required by AutoProcessor.
+    For text-only models, content is passed as plain strings
+    as required by AutoTokenizer.apply_chat_template.
+    """
     import torch
 
-    model, processor = model_and_processor
-    full_prompt      = prompt if not retry_note else f"{prompt}{retry_note}"
+    model, processor  = model_and_processor
+    tok               = _get_tokenizer(processor)
+    full_prompt       = prompt if not retry_note else f"{prompt}{retry_note}"
+    is_multimodal_proc = hasattr(processor, "tokenizer")
 
     if max_input_tokens > 0:
-        tok    = processor.tokenizer if hasattr(processor, "tokenizer") else processor
         tokens = tok.encode(full_prompt)
         if len(tokens) > max_input_tokens:
             logger.warning(f"Prompt still {len(tokens)} tokens after example "
                            f"trimming (budget={max_input_tokens})")
 
-    messages = [
-        {"role": "system", "content": [{"type": "text", "text": system}]},
-        {"role": "user",   "content": [{"type": "text", "text": full_prompt}]},
-    ]
+    if is_multimodal_proc:
+        # AutoProcessor expects typed content dicts
+        messages = [
+            {"role": "system", "content": [{"type": "text", "text": system}]},
+            {"role": "user",   "content": [{"type": "text", "text": full_prompt}]},
+        ]
+    else:
+        # AutoTokenizer expects plain string content
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user",   "content": full_prompt},
+        ]
 
-    inputs    = processor.apply_chat_template(
+    inputs = processor.apply_chat_template(
         messages,
         add_generation_prompt=True,
         tokenize=True,
@@ -586,8 +835,7 @@ def generate_prediction(
         return_tensors="pt",
     ).to(model.device)
 
-    input_len = inputs["input_ids"].shape[-1]
-
+    input_len  = inputs["input_ids"].shape[-1]
     gen_kwargs = dict(max_new_tokens=max_tokens, do_sample=temperature > 0.0)
     if temperature > 0.0:
         gen_kwargs["temperature"] = temperature
@@ -597,7 +845,7 @@ def generate_prediction(
         output_ids = model.generate(**inputs, **gen_kwargs)
 
     new_tokens = output_ids[0][input_len:]
-    response   = processor.decode(new_tokens, skip_special_tokens=True).strip()
+    response   = tok.decode(new_tokens, skip_special_tokens=True).strip()
     logger.debug(f"Response: {response}")
     return response
 
@@ -907,21 +1155,29 @@ def run_predictions(
     vote_threshold:      float,
     min_important_run:   int,
     min_unimportant_run: int,
+    filter_order:        str,
     temperature:         float,
     max_tokens:          int,
     max_retries:         int,
     max_input_tokens:    int,
     verbose:             bool,
+    summaries_dir:       str | None = None,
+    summary_max_das:     int        = 200,
+    codebook:            dict       | None = None,
+    base_rate:           float      = 0.0,
 ) -> tuple[list[int], list[int], list[dict]]:
     """
     Sliding window ensemble prediction.
 
     For each transcript:
-      1. Slide a window of window_size DAs across the transcript at
+      1. If summaries_dir is provided, generate (or load cached) a neutral
+         factual summary of the transcript and build a per-transcript system
+         prompt that includes it. Otherwise use the shared system_prompt.
+      2. Slide a window of window_size DAs across the transcript at
          window_stride intervals, collecting one binary vote per window.
-      2. Each DA accumulates votes from every window that covers it.
-      3. Vote fraction >= vote_threshold -> DA predicted important.
-      4. Apply min-run-length post-processing to enforce contiguity.
+      3. Each DA accumulates votes from every window that covers it.
+      4. Vote fraction >= vote_threshold -> DA predicted important.
+      5. Apply min-run-length post-processing to enforce contiguity.
 
     Windows at the edges of the transcript will receive fewer votes —
     this is expected and acceptable.
@@ -933,6 +1189,23 @@ def run_predictions(
     for fname, rec in test_transcripts.items():
         n = len(rec["das"])
         print(f"\n  Transcript: {fname}  ({n} DAs)", flush=True)
+
+        # ── per-transcript system prompt with summary ──────────────────────
+        if summaries_dir is not None:
+            summary = generate_transcript_summary(
+                rec, fname, model_and_processor,
+                summaries_dir=summaries_dir,
+                max_das=summary_max_das,
+            )
+            active_system_prompt = build_system_prompt_with_summary(
+                codebook   or {},
+                base_rate,
+                summary,
+            )
+            print(f"    System prompt with summary: "
+                  f"{len(active_system_prompt)} chars", flush=True)
+        else:
+            active_system_prompt = system_prompt
 
         # vote_counts[i] = number of windows that voted important for DA i
         # vote_totals[i] = number of windows that covered DA i
@@ -971,7 +1244,7 @@ def run_predictions(
                     )
                 )
                 response = generate_prediction(
-                    prompt, system_prompt, model_and_processor,
+                    prompt, active_system_prompt, model_and_processor,
                     temperature, max_tokens,
                     retry_note=retry_note,
                     max_input_tokens=max_input_tokens,
@@ -1012,7 +1285,8 @@ def run_predictions(
 
         # ── apply min-run-length post-processing ──────────────────────────────
         final_preds = apply_min_run_filter(
-            raw_preds, min_important_run, min_unimportant_run
+            raw_preds, min_important_run, min_unimportant_run,
+            filter_order=filter_order,
         )
 
         n_raw_pos   = sum(raw_preds)
@@ -1109,6 +1383,14 @@ def main():
     parser.add_argument("--min_unimportant_run", type=int, default=1,
                         help="Minimum contiguous run of not-important DAs. "
                              "Shorter runs are flipped to important. (default: 1)")
+    parser.add_argument("--filter_order", default="unimportant_first",
+                        choices=["unimportant_first", "important_first"],
+                        help="Order of min-run filter passes. "
+                             "'unimportant_first' fills short gaps first then "
+                             "removes short important bursts — best for "
+                             "segmentation where small holes are common. "
+                             "'important_first' removes isolated spikes first. "
+                             "(default: unimportant_first)")
 
     parser.add_argument("--model_id",    default="google/gemma-4-E4B-it",
                         help="HuggingFace model ID. (default: google/gemma-4-E4B-it)")
@@ -1126,6 +1408,14 @@ def main():
                         help="Comma-separated ngram sizes for ceiling estimate. "
                              "(default: 4 through 13)")
 
+    parser.add_argument("--use_summary", action="store_true",
+                        help="Generate a neutral per-transcript summary and include "
+                             "it in the system prompt for all windows of that "
+                             "transcript. Summaries are cached to "
+                             "{outdir}/summaries/ and reused on reruns.")
+    parser.add_argument("--summary_max_das", type=int, default=200,
+                        help="Max DAs to include in transcript summary prompt. "
+                             "Lower values reduce memory usage. (default: 200)")
     parser.add_argument("--outdir",  default="llm_output/")
     parser.add_argument("--verbose", action="store_true",
                         help="Print progress every 10 windows.")
@@ -1211,6 +1501,13 @@ def main():
     print(f"\nRunning predictions on {len(test_transcripts)} test transcripts "
           f"({total_das} DAs) …", flush=True)
 
+    summaries_dir = (
+        os.path.join(args.outdir, "summaries") if args.use_summary else None
+    )
+    if summaries_dir:
+        print(f"\nTranscript summaries will be saved to: {summaries_dir}",
+              flush=True)
+
     y_true, y_pred, pred_rows = run_predictions(
         test_transcripts=test_transcripts,
         pos_examples=pos_examples,
@@ -1222,11 +1519,16 @@ def main():
         vote_threshold=args.vote_threshold,
         min_important_run=args.min_important_run,
         min_unimportant_run=args.min_unimportant_run,
+        filter_order=args.filter_order,
         temperature=args.temperature,
         max_tokens=args.max_tokens,
         max_retries=args.max_retries,
         max_input_tokens=args.max_input_tokens,
         verbose=args.verbose,
+        summaries_dir=summaries_dir,
+        summary_max_das=args.summary_max_das,
+        codebook=codebook,
+        base_rate=base_rate,
     )
 
     # ── evaluate ──────────────────────────────────────────────────────────────
@@ -1274,6 +1576,7 @@ def main():
             "base_rate_train":     round(base_rate, 4),
             "n_codes_in_prompt":   len(codebook),
             "max_retries":         args.max_retries,
+            "use_summary":         args.use_summary,
             "n_retried":           0,  # window-level retries not tracked per DA
             **metrics,
             **ceiling,

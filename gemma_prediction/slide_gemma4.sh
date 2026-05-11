@@ -22,7 +22,14 @@
 #SBATCH --output=wpredict.out
 #SBATCH --error=wpredict.err
 
+export HF_HOME=/dartfs-hpc/scratch/f007z5s
+export TRANSFORMERS_CACHE=/dartfs-hpc/scratch/f007z5s
+export HF_DATASETS_CACHE=/dartfs-hpc/scratch/f007z5s
+
 nvidia-smi
 module load conda
 conda activate paullab
-python -m gemma_prediction.slide_gemma4 --dir output/ --text_col spoken_text --verbose --codebook codebook.xlsx --max_input_tokens 12000 --target therapist --window_size 40 --window_stride 5
+python -m gemma_prediction.slide_gemma4 --dir output/ --text_col spoken_text --model_id google/gemma-4-26B-A4B-it \
+--hf_cache_dir /dartfs-hpc/scratch/f007z5s --verbose --codebook codebook.xlsx --max_input_tokens 12000 --target therapist \
+--window_size 20 --window_stride 5 --vote_threshold 0.76 --use_summary \
+--n_few_shot 8 --pos_proportion 0.75 --temperature 0.1
