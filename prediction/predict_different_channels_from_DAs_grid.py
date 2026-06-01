@@ -877,7 +877,7 @@ def main():
                         help="Comma-separated decision thresholds to sweep. (default: 0.4)")
     parser.add_argument("--gs_neg_rates",     default="1.0",
                         help="Comma-separated neg downsample rates to sweep. (default: 1.0)")
-    parser.add_argument("--gs_pw_scales",     default="1.0",
+    parser.add_argument("--gs_pw_scales",     default="0.75",
                         help="Comma-separated pos_weight_scale values to sweep. "
                              "<1.0 reduces false positives. (default: 0.5,0.75,1.0)")
     parser.add_argument("--gs_context_before", default="4",

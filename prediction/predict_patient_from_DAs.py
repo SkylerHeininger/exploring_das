@@ -31,14 +31,11 @@ from plotting.common_patterns import (
     get_label,
 )
 
-# ── reproducibility ───────────────────────────────────────────────────────────
 
 SEED = 42
 torch.manual_seed(SEED)
 np.random.seed(SEED)
 
-
-# ── token normalisation ───────────────────────────────────────────────────────
 
 def _normalise_speaker(raw: str) -> str:
     if isinstance(raw, str) and raw.strip().lower() == "therapist":
@@ -57,8 +54,6 @@ def _normalise_timestamp(df: pd.DataFrame) -> list[float] | None:
         return [0.5] * len(ts)
     return ((ts - ts_min) / (ts_max - ts_min)).fillna(0.5).tolist()
 
-
-# ── vocabulary ────────────────────────────────────────────────────────────────
 
 PAD_TOKEN = "<PAD>"
 UNK_TOKEN = "<UNK>"
@@ -105,8 +100,6 @@ def build_vocabulary(
             vocab.add(da, spkr)
     return vocab
 
-
-# ── data preparation ──────────────────────────────────────────────────────────
 
 def df_to_tensors(
     df:          pd.DataFrame,
@@ -165,8 +158,6 @@ def make_loss_mask(
         mask[idx] = True
     return mask
 
-
-# ── 1D CNN model ──────────────────────────────────────────────────────────────
 
 class CNNImportanceClassifier(nn.Module):
     """
@@ -239,8 +230,6 @@ class CNNImportanceClassifier(nn.Module):
         return logits.squeeze(0) if unbatched else logits
 
 
-# ── training helpers ──────────────────────────────────────────────────────────
-
 def train_epoch(
     model:               CNNImportanceClassifier,
     optimizer:           torch.optim.Optimizer,
@@ -289,8 +278,6 @@ def predict_transcript(
     probs  = torch.sigmoid(logits).cpu()
     return (probs >= threshold).long().tolist()
 
-
-# ── LOOCV ─────────────────────────────────────────────────────────────────────
 
 def run_loocv(
     transcripts:         dict[str, pd.DataFrame],
